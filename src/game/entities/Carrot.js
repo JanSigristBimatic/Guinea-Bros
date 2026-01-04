@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { createMaterial } from '../utils/three-helpers'
 
 const CARROT_COLORS = {
@@ -13,17 +14,42 @@ const CARROT_VALUES = {
   blue: 3,
 }
 
-export function createCarrot(x, z, type = 'normal') {
+// Cached carrot model
+let cachedCarrotModel = null
+let modelLoadPromise = null
+
+// Preload the carrot GLB model
+export function preloadCarrotModel() {
+  if (modelLoadPromise) return modelLoadPromise
+
+  modelLoadPromise = new Promise((resolve, reject) => {
+    const loader = new GLTFLoader()
+    loader.load(
+      '/glb/vegetables/Karotte.glb',
+      (gltf) => {
+        cachedCarrotModel = gltf.scene
+        cachedCarrotModel.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true
+            child.receiveShadow = true
+          }
+        })
+        resolve(cachedCarrotModel)
+      },
+      undefined,
+      (error) => {
+        console.warn('Failed to load carrot model, using fallback:', error)
+        reject(error)
+      }
+    )
+  })
+
+  return modelLoadPromise
+}
+
+// Create fallback carrot with simple geometry
+function createFallbackCarrot(type, color) {
   const group = new THREE.Group()
-
-  group.userData = {
-    collected: false,
-    type,
-    value: CARROT_VALUES[type],
-    effect: type === 'golden' ? 'bonus' : (type === 'blue' ? 'speed' : null),
-  }
-
-  const color = CARROT_COLORS[type]
 
   // Carrot body
   const bodyGeo = new THREE.ConeGeometry(0.14, 0.55, 8)
@@ -49,6 +75,45 @@ export function createCarrot(x, z, type = 'normal') {
     )
     leaf.rotation.x = (Math.random() - 0.5) * 0.3
     group.add(leaf)
+  }
+
+  return group
+}
+
+export function createCarrot(x, z, type = 'normal') {
+  const group = new THREE.Group()
+
+  group.userData = {
+    collected: false,
+    type,
+    value: CARROT_VALUES[type],
+    effect: type === 'golden' ? 'bonus' : (type === 'blue' ? 'speed' : null),
+  }
+
+  const color = CARROT_COLORS[type]
+
+  // Use GLB model if loaded, otherwise use fallback
+  if (cachedCarrotModel) {
+    const carrotModel = cachedCarrotModel.clone()
+    carrotModel.scale.setScalar(0.4)
+    carrotModel.position.y = 0.1
+
+    // Apply color tint for special carrot types
+    if (type !== 'normal') {
+      carrotModel.traverse((child) => {
+        if (child.isMesh) {
+          child.material = child.material.clone()
+          child.material.emissive = new THREE.Color(color)
+          child.material.emissiveIntensity = 0.4
+        }
+      })
+    }
+
+    group.add(carrotModel)
+  } else {
+    // Fallback to procedural geometry
+    const fallback = createFallbackCarrot(type, color)
+    group.add(fallback)
   }
 
   // Glow ring

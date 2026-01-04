@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 // ============== PERSISTENT SKILL TREE DATA ==============
 const DEFAULT_SKILLS = {
@@ -75,6 +76,8 @@ export default function GuineaPigTDRoguelike() {
   // Building state
   const [buildMode, setBuildMode] = useState(null);
   const [buildings, setBuildings] = useState([]);
+  const [buildRotation, setBuildRotation] = useState(0); // 0, 45, 90, 135, 180, 225, 270, 315 degrees
+  const [wallDragStart, setWallDragStart] = useState(null); // For wall drag-building
   
   // Skill tree
   const [showSkillTree, setShowSkillTree] = useState(false);
@@ -135,17 +138,24 @@ export default function GuineaPigTDRoguelike() {
     // ============== SCENE SETUP ==============
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87CEEB);
-    scene.fog = new THREE.Fog(0x87CEEB, 40, 100);
 
     const camera = new THREE.PerspectiveCamera(50, containerRef.current.clientWidth / containerRef.current.clientHeight, 0.1, 200);
     camera.position.set(0, 28, 35);
     camera.lookAt(0, 0, 0);
+
+    // Zoom control
+    let zoomLevel = 1;
+    const minZoom = 0.5;
+    const maxZoom = 2.5;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.3;
     containerRef.current.appendChild(renderer.domElement);
 
     // Lighting
@@ -162,10 +172,10 @@ export default function GuineaPigTDRoguelike() {
     sunLight.shadow.camera.bottom = -50;
     scene.add(sunLight);
 
-    const ambientLight = new THREE.AmbientLight(0x8EC8FF, 0.5);
+    const ambientLight = new THREE.AmbientLight(0x8EC8FF, 0.7);
     scene.add(ambientLight);
 
-    const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x5C4033, 0.3);
+    const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x5C4033, 0.5);
     scene.add(hemiLight);
 
     const lights = { sun: sunLight, ambient: ambientLight, hemi: hemiLight };
@@ -230,19 +240,6 @@ export default function GuineaPigTDRoguelike() {
     const rain = new THREE.Points(rainGeo, rainMat);
     rain.visible = false;
     scene.add(rain);
-
-    // Fog planes for foggy weather
-    const fogPlanes = [];
-    for (let i = 0; i < 8; i++) {
-      const fogGeo = new THREE.PlaneGeometry(20, 8);
-      const fogMat = new THREE.MeshBasicMaterial({ color: 0xCCCCCC, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
-      const fog = new THREE.Mesh(fogGeo, fogMat);
-      fog.position.set((Math.random() - 0.5) * 40, 2, (Math.random() - 0.5) * 40);
-      fog.rotation.y = Math.random() * Math.PI;
-      fog.visible = false;
-      scene.add(fog);
-      fogPlanes.push(fog);
-    }
 
     // ============== MAIN BURROW (enhanced) ==============
     function createMainBurrow() {
@@ -310,28 +307,32 @@ export default function GuineaPigTDRoguelike() {
     scene.add(mainBurrow);
 
     // ============== GUINEA PIG HOUSES ==============
-    // Meerschweinchen-Häuschen: Kleine Holzhütten mit rundem Eingang, Rampe, Stroh-Dach
+    // Gebäude mit GLB-Modellen
+    const buildingModelPaths = {
+      collectorHut: '/glb/Buildings/House.glb',
+      heroHut: '/glb/Buildings/Fort.glb',
+      tower: '/glb/Buildings/Tower.glb',
+    };
+
+    const buildingScales = {
+      collectorHut: 1.6,
+      heroHut: 3.2,
+      tower: 2.4,
+    };
+
     function createGuineaPigHouse(type) {
       const group = new THREE.Group();
-      group.userData = { 
-        type, 
-        spawnTimer: 0, 
+      group.userData = {
+        type,
+        spawnTimer: 0,
         health: type === 'wall' ? (100 + getSkillEffect('wallHealth')) : 200,
         maxHealth: type === 'wall' ? (100 + getSkillEffect('wallHealth')) : 200,
       };
 
-      const colors = {
-        collectorHut: { wood: 0xDEB887, roof: 0x8FBC8F, accent: 0xF4A460 },
-        heroHut: { wood: 0xCD853F, roof: 0x4169E1, accent: 0xFFD700 },
-        tower: { wood: 0xA0522D, roof: 0x8B0000, accent: 0x2F4F4F },
-        wall: { wood: 0x696969, roof: 0x696969, accent: 0x808080 },
-      };
-      const c = colors[type];
-
       if (type === 'wall') {
-        // Simple wall segment
+        // Simple wall segment (keep procedural)
         const wallGeo = new THREE.BoxGeometry(2, 1.8, 0.6);
-        const wallMat = new THREE.MeshStandardMaterial({ color: c.wood, roughness: 0.9 });
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x696969, roughness: 0.9 });
         const wall = new THREE.Mesh(wallGeo, wallMat);
         wall.position.y = 0.9;
         wall.castShadow = true;
@@ -344,140 +345,49 @@ export default function GuineaPigTDRoguelike() {
         top.position.y = 1.95;
         top.castShadow = true;
         group.add(top);
-      } else {
-        // Base/floor
-        const baseGeo = new THREE.BoxGeometry(2.4, 0.3, 2.4);
-        const baseMat = new THREE.MeshStandardMaterial({ color: c.wood, roughness: 0.8 });
-        const base = new THREE.Mesh(baseGeo, baseMat);
-        base.position.y = 0.15;
-        base.castShadow = true;
-        base.receiveShadow = true;
-        group.add(base);
-
-        // Walls (hollow box)
-        const wallHeight = type === 'tower' ? 2.5 : 1.4;
-        const wallThickness = 0.15;
-        
-        // Front wall with hole
-        const frontGeo = new THREE.BoxGeometry(2.2, wallHeight, wallThickness);
-        const wallMat = new THREE.MeshStandardMaterial({ color: c.wood, roughness: 0.7 });
-        const front = new THREE.Mesh(frontGeo, wallMat);
-        front.position.set(0, wallHeight/2 + 0.3, 1.05);
-        front.castShadow = true;
-        group.add(front);
-
-        // Entrance hole (circular)
-        const holeGeo = new THREE.CircleGeometry(0.45, 16);
-        const holeMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
-        const hole = new THREE.Mesh(holeGeo, holeMat);
-        hole.position.set(0, 0.7, 1.06);
-        group.add(hole);
-
-        // Arch around hole
-        const archGeo = new THREE.TorusGeometry(0.5, 0.08, 8, 16, Math.PI);
-        const archMat = new THREE.MeshStandardMaterial({ color: c.accent });
-        const arch = new THREE.Mesh(archGeo, archMat);
-        arch.position.set(0, 0.7, 1.08);
-        arch.rotation.z = Math.PI;
-        group.add(arch);
-
-        // Back wall
-        const back = new THREE.Mesh(frontGeo, wallMat);
-        back.position.set(0, wallHeight/2 + 0.3, -1.05);
-        back.castShadow = true;
-        group.add(back);
-
-        // Side walls
-        const sideGeo = new THREE.BoxGeometry(wallThickness, wallHeight, 2.2);
-        [-1.05, 1.05].forEach(x => {
-          const side = new THREE.Mesh(sideGeo, wallMat);
-          side.position.set(x, wallHeight/2 + 0.3, 0);
-          side.castShadow = true;
-          group.add(side);
-        });
-
-        // Roof (cute A-frame with straw texture)
-        if (type !== 'tower') {
-          const roofGeo = new THREE.ConeGeometry(1.8, 1.2, 4);
-          const roofMat = new THREE.MeshStandardMaterial({ color: c.roof, roughness: 0.9 });
-          const roof = new THREE.Mesh(roofGeo, roofMat);
-          roof.position.y = wallHeight + 0.8;
-          roof.rotation.y = Math.PI / 4;
-          roof.castShadow = true;
-          group.add(roof);
-
-          // Straw details
-          for (let i = 0; i < 12; i++) {
-            const strawGeo = new THREE.CylinderGeometry(0.02, 0.03, 0.4, 4);
-            const strawMat = new THREE.MeshStandardMaterial({ color: 0xF5DEB3 });
-            const straw = new THREE.Mesh(strawGeo, strawMat);
-            const angle = (i / 12) * Math.PI * 2;
-            straw.position.set(Math.cos(angle) * 1.5, wallHeight + 0.5, Math.sin(angle) * 1.5);
-            straw.rotation.x = Math.random() * 0.3;
-            straw.rotation.z = Math.random() * 0.3;
-            group.add(straw);
+      } else if (buildingModelPaths[type]) {
+        // Load GLB model for building
+        const loader = new GLTFLoader();
+        loader.load(
+          buildingModelPaths[type],
+          (gltf) => {
+            const model = gltf.scene;
+            const scale = buildingScales[type] || 1;
+            model.scale.set(scale, scale, scale);
+            model.position.y = 0.8; // Anheben über den Boden
+            model.traverse((child) => {
+              if (child.isMesh) {
+                child.castShadow = true;
+                child.receiveShadow = true;
+              }
+            });
+            group.add(model);
+          },
+          undefined,
+          (error) => {
+            console.error(`Error loading ${type} model:`, error);
+            // Fallback: create simple placeholder
+            const fallbackGeo = new THREE.BoxGeometry(2, 2, 2);
+            const fallbackMat = new THREE.MeshStandardMaterial({ color: 0x888888 });
+            const fallback = new THREE.Mesh(fallbackGeo, fallbackMat);
+            fallback.position.y = 1;
+            fallback.castShadow = true;
+            group.add(fallback);
           }
-        } else {
-          // Tower has pointed roof with flag
-          const towerRoofGeo = new THREE.ConeGeometry(1.5, 1.8, 8);
-          const towerRoofMat = new THREE.MeshStandardMaterial({ color: c.roof });
-          const towerRoof = new THREE.Mesh(towerRoofGeo, towerRoofMat);
-          towerRoof.position.y = wallHeight + 1.1;
-          towerRoof.castShadow = true;
-          group.add(towerRoof);
-
-          // Tower flag
-          const poleGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.2, 6);
-          const pole = new THREE.Mesh(poleGeo, new THREE.MeshStandardMaterial({ color: 0x8B4513 }));
-          pole.position.y = wallHeight + 2.2;
-          group.add(pole);
-
-          const flagGeo = new THREE.PlaneGeometry(0.6, 0.4);
-          const flagMat = new THREE.MeshStandardMaterial({ color: 0xFF0000, side: THREE.DoubleSide });
-          const flag = new THREE.Mesh(flagGeo, flagMat);
-          flag.position.set(0.35, wallHeight + 2.5, 0);
-          group.add(flag);
-          group.userData.flag = flag;
-
-          // Crossbow on top
-          const crossbowGeo = new THREE.BoxGeometry(0.8, 0.2, 0.2);
-          const crossbow = new THREE.Mesh(crossbowGeo, new THREE.MeshStandardMaterial({ color: 0x4a3000 }));
-          crossbow.position.y = wallHeight + 0.5;
-          group.add(crossbow);
-          group.userData.crossbow = crossbow;
-        }
-
-        // Little ramp
-        const rampGeo = new THREE.BoxGeometry(0.6, 0.1, 0.8);
-        const rampMat = new THREE.MeshStandardMaterial({ color: c.wood });
-        const ramp = new THREE.Mesh(rampGeo, rampMat);
-        ramp.position.set(0, 0.2, 1.5);
-        ramp.rotation.x = 0.3;
-        ramp.castShadow = true;
-        group.add(ramp);
-
-        // Type indicator
-        const icons = { collectorHut: 0xFFA500, heroHut: 0x9932CC, tower: 0xFF4500 };
-        if (icons[type]) {
-          const indicatorGeo = new THREE.SphereGeometry(0.2, 8, 8);
-          const indicatorMat = new THREE.MeshBasicMaterial({ color: icons[type] });
-          const indicator = new THREE.Mesh(indicatorGeo, indicatorMat);
-          indicator.position.y = (type === 'tower' ? 4.5 : 2.8);
-          group.add(indicator);
-          group.userData.indicator = indicator;
-        }
+        );
       }
 
-      // HP bar for all buildings
+      // HP bar for all buildings (adjusted for larger models)
+      const hpBarHeight = type === 'wall' ? 2.5 : (type === 'tower' ? 10 : (type === 'heroHut' ? 12 : 6));
       const hpBgGeo = new THREE.PlaneGeometry(2, 0.2);
       const hpBg = new THREE.Mesh(hpBgGeo, new THREE.MeshBasicMaterial({ color: 0x333333 }));
-      hpBg.position.y = type === 'wall' ? 2.5 : (type === 'tower' ? 5 : 3.2);
+      hpBg.position.y = hpBarHeight;
       hpBg.rotation.x = -0.3;
       group.add(hpBg);
 
       const hpBarGeo = new THREE.PlaneGeometry(1.9, 0.15);
       const hpBar = new THREE.Mesh(hpBarGeo, new THREE.MeshBasicMaterial({ color: 0x00FF00 }));
-      hpBar.position.y = type === 'wall' ? 2.52 : (type === 'tower' ? 5.02 : 3.22);
+      hpBar.position.y = hpBarHeight + 0.02;
       hpBar.rotation.x = -0.3;
       group.add(hpBar);
       group.userData.hpBar = hpBar;
@@ -503,11 +413,11 @@ export default function GuineaPigTDRoguelike() {
     function createGuineaPig(type, isPlayer = false, scale = 1) {
       const config = GUINEA_PIG_TYPES[type] || GUINEA_PIG_TYPES.player;
       const group = new THREE.Group();
-      
+
       const heroBonus = 1 + getSkillEffect('heroStats') / 100;
-      
-      group.userData = { 
-        type, 
+
+      group.userData = {
+        type,
         isPlayer,
         isPartner: type.startsWith('partner'),
         isCollector: type === 'collector',
@@ -525,6 +435,39 @@ export default function GuineaPigTDRoguelike() {
         attackRange: type === 'bomber' ? 7 : (type === 'assassin' ? 3 : 5),
         attackDamage: Math.floor((type === 'bomber' ? 30 : (type === 'assassin' ? 45 : 18)) * heroBonus),
       };
+
+      // Use GLB model for collector (Sammler)
+      if (type === 'collector') {
+        const loader = new GLTFLoader();
+        loader.load(
+          '/glb/Sammler.glb',
+          (gltf) => {
+            const model = gltf.scene;
+            model.scale.set(2.25, 2.25, 2.25);
+            model.rotation.y = Math.PI / 2; // 90 Grad nach rechts drehen
+            model.traverse((child) => {
+              if (child.isMesh) {
+                child.castShadow = true;
+                child.receiveShadow = true;
+              }
+            });
+            group.add(model);
+          },
+          undefined,
+          (error) => {
+            console.error('Error loading Sammler model:', error);
+            // Fallback: create simple placeholder
+            const fallbackGeo = new THREE.SphereGeometry(0.5, 8, 8);
+            const fallbackMat = new THREE.MeshStandardMaterial({ color: 0xFFA500 });
+            const fallback = new THREE.Mesh(fallbackGeo, fallbackMat);
+            fallback.position.y = 0.5;
+            fallback.castShadow = true;
+            group.add(fallback);
+          }
+        );
+        group.scale.setScalar(scale);
+        return group;
+      }
 
       const { c1, c2 } = config;
 
@@ -560,7 +503,7 @@ export default function GuineaPigTDRoguelike() {
         );
         eye.position.set(0.72, 0.46, z);
         group.add(eye);
-        
+
         const shine = new THREE.Mesh(
           new THREE.SphereGeometry(0.025, 8, 8),
           new THREE.MeshBasicMaterial({ color: 0xffffff })
@@ -604,15 +547,6 @@ export default function GuineaPigTDRoguelike() {
         crown.position.set(0.52, 0.82, 0);
         group.add(crown);
         group.userData.crown = crown;
-      }
-
-      // Collector bag
-      if (type === 'collector') {
-        const bagGeo = new THREE.SphereGeometry(0.2, 8, 6);
-        bagGeo.scale(1, 0.8, 0.6);
-        const bag = new THREE.Mesh(bagGeo, new THREE.MeshStandardMaterial({ color: 0x8B4513 }));
-        bag.position.set(-0.4, 0.35, 0);
-        group.add(bag);
       }
 
       // Type accessories
@@ -660,6 +594,203 @@ export default function GuineaPigTDRoguelike() {
         group.add(heart);
         group.userData.heartIndicator = heart;
       }
+
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    // ============== HEALER TANK (GLB MODEL) ==============
+    function loadHealerModels(group, scale) {
+      const gltfLoader = new GLTFLoader();
+      let loadedCount = 0;
+      const totalModels = 3;
+
+      const onAllLoaded = () => {
+        if (group.userData.placeholder) {
+          group.remove(group.userData.placeholder);
+          group.userData.placeholder = null;
+        }
+        group.userData.modelLoaded = true;
+        console.log('Healer Tank fully loaded');
+      };
+
+      // 1. Tank (Basis)
+      gltfLoader.load('/glb/Healer/Tank.glb', (gltf) => {
+        const tank = gltf.scene;
+        tank.name = 'TankBase';
+        tank.scale.setScalar(1.0);
+        tank.position.set(0, 0.3, 0); // Angehoben
+        tank.rotation.y = Math.PI; // Tank umdrehen
+        tank.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = false; // Heroes don't receive shadows for better visibility
+          }
+        });
+        group.add(tank);
+        loadedCount++;
+        if (loadedCount === totalModels) onAllLoaded();
+      }, undefined, (error) => {
+        console.error('Error loading Tank.glb:', error);
+        loadedCount++;
+        if (loadedCount === totalModels) onAllLoaded();
+      });
+
+      // 2. Turret (rotierbar)
+      gltfLoader.load('/glb/Healer/Turet.glb', (gltf) => {
+        const turret = gltf.scene;
+        turret.name = 'Turret';
+        turret.scale.setScalar(1.0);
+        turret.position.set(0, 0.7, 0); // Höher
+        turret.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = false; // Heroes don't receive shadows for better visibility
+          }
+        });
+        group.add(turret);
+        group.userData.turret = turret;
+        loadedCount++;
+        if (loadedCount === totalModels) onAllLoaded();
+      }, undefined, (error) => {
+        console.error('Error loading Turet.glb:', error);
+        loadedCount++;
+        if (loadedCount === totalModels) onAllLoaded();
+      });
+
+      // 3. Healer Charakter
+      gltfLoader.load('/glb/Healer/Healer.glb', (gltf) => {
+        const healer = gltf.scene;
+        healer.name = 'HealerCharacter';
+        healer.scale.setScalar(0.7); // Kleiner
+        healer.position.set(0, 1.1, 0); // Höher
+        healer.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = false; // Heroes don't receive shadows for better visibility
+          }
+        });
+        group.add(healer);
+        group.userData.healerBody = healer;
+        loadedCount++;
+        if (loadedCount === totalModels) onAllLoaded();
+      }, undefined, (error) => {
+        console.error('Error loading Healer.glb:', error);
+        loadedCount++;
+        if (loadedCount === totalModels) onAllLoaded();
+      });
+    }
+
+    // Debug-Editor für Healer-Modell Positionen (Browser-Konsole)
+    window.healerEditor = {
+      // Aktuelle Werte
+      config: {
+        tank: { y: 0.3 },
+        turret: { y: 0.7, scale: 1.0 },
+        healer: { y: 1.1, scale: 0.7 }
+      },
+      // Healer im Spiel finden und anpassen
+      apply: function() {
+        if (typeof defenders === 'undefined') {
+          console.log('Spiel noch nicht gestartet');
+          return;
+        }
+        defenders.forEach(d => {
+          if (d.userData.isGLBModel) {
+            d.children.forEach(child => {
+              if (child.name === 'TankBase') {
+                child.position.y = this.config.tank.y;
+              } else if (child.name === 'Turret') {
+                child.position.y = this.config.turret.y;
+                child.scale.setScalar(this.config.turret.scale);
+              } else if (child.name === 'HealerCharacter') {
+                child.position.y = this.config.healer.y;
+                child.scale.setScalar(this.config.healer.scale);
+              }
+            });
+          }
+        });
+        console.log('Healer aktualisiert:', this.config);
+      },
+      // Schnelle Befehle
+      tank: function(y) { this.config.tank.y = y; this.apply(); },
+      turret: function(y, scale) {
+        this.config.turret.y = y;
+        if (scale) this.config.turret.scale = scale;
+        this.apply();
+      },
+      healer: function(y, scale) {
+        this.config.healer.y = y;
+        if (scale) this.config.healer.scale = scale;
+        this.apply();
+      },
+      help: function() {
+        console.log(`
+=== Healer Editor ===
+healerEditor.tank(y)           - Tank Y-Position
+healerEditor.turret(y, scale)  - Turret Y + Scale
+healerEditor.healer(y, scale)  - Healer Y + Scale
+healerEditor.apply()           - Änderungen anwenden
+healerEditor.config            - Aktuelle Werte zeigen
+        `);
+      }
+    };
+    console.log('Healer Editor geladen. Tippe healerEditor.help() für Befehle.');
+
+    function createHealerTank(scale = 1) {
+      const group = new THREE.Group();
+      const heroBonus = 1 + getSkillEffect('heroStats') / 100;
+
+      group.userData = {
+        type: 'healer',
+        isPlayer: false,
+        health: Math.floor(70 * heroBonus),
+        maxHealth: Math.floor(70 * heroBonus),
+        attackCooldown: 0,
+        abilityCooldown: 0,
+        targetRotation: 0,
+        radius: 1.2 * scale,
+        speed: 0.02,
+        attackRange: 8,
+        attackDamage: Math.floor(15 * heroBonus),
+        isGLBModel: true,
+        modelLoaded: false,
+        turret: null,
+        healerBody: null,
+        patrolTarget: new THREE.Vector3(),
+        patrolWait: 0,
+        placed: false,
+      };
+
+      // Placeholder während Laden
+      const placeholder = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({ color: 0xFFB6C1, transparent: true, opacity: 0.5 })
+      );
+      placeholder.position.y = 0.5;
+      group.add(placeholder);
+      group.userData.placeholder = placeholder;
+
+      // GLB Modelle laden
+      loadHealerModels(group, scale);
+
+      // HP Bar
+      const hpBg = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.5, 0.15),
+        new THREE.MeshBasicMaterial({ color: 0x333333 })
+      );
+      hpBg.position.set(0, 2.5, 0);
+      hpBg.rotation.x = -0.5;
+      group.add(hpBg);
+
+      const hpBar = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.45, 0.12),
+        new THREE.MeshBasicMaterial({ color: 0x00FF00 })
+      );
+      hpBar.position.set(0, 2.52, 0.01);
+      hpBar.rotation.x = -0.5;
+      group.add(hpBar);
+      group.userData.hpBar = hpBar;
 
       group.scale.setScalar(scale);
       return group;
@@ -896,51 +1027,322 @@ export default function GuineaPigTDRoguelike() {
       return group;
     }
 
+    // ============== BOMBER HERO (GLB MODEL) ==============
+    function createBomberHero(scale = 1) {
+      const group = new THREE.Group();
+      const heroBonus = 1 + getSkillEffect('heroStats') / 100;
+
+      group.userData = {
+        type: 'bomber',
+        isPlayer: false,
+        health: Math.floor(60 * heroBonus),
+        maxHealth: Math.floor(60 * heroBonus),
+        attackCooldown: 0,
+        abilityCooldown: 0,
+        targetRotation: 0,
+        radius: 1.0 * scale,
+        speed: 0.018,
+        attackRange: 10, // Fernkampf mit Bomben
+        attackDamage: Math.floor(35 * heroBonus),
+        isGLBModel: true,
+        modelLoaded: false,
+        bomberModel: null,
+        bombInHand: null,
+        hasBomb: true,
+        bombCooldown: 0,
+        splashRadius: 3,
+        patrolTarget: new THREE.Vector3(),
+        patrolWait: 0,
+        placed: false,
+      };
+
+      // Placeholder während Laden
+      const placeholder = new THREE.Mesh(
+        new THREE.BoxGeometry(0.8, 0.8, 0.8),
+        new THREE.MeshBasicMaterial({ color: 0xFF6B35, transparent: true, opacity: 0.5 })
+      );
+      placeholder.position.y = 0.5;
+      group.add(placeholder);
+      group.userData.placeholder = placeholder;
+
+      // GLB Modelle laden
+      const bomberLoader = new GLTFLoader();
+
+      // Bomber-Körper laden
+      bomberLoader.load('/glb/Bomber/Bomber.glb', (gltf) => {
+        const bomberModel = gltf.scene;
+        bomberModel.name = 'BomberBody';
+        bomberModel.scale.setScalar(scale * 0.8);
+        bomberModel.position.y = 0.8; // Angehoben damit nicht im Boden
+        bomberModel.rotation.y = Math.PI / 2; // 90 Grad drehen damit er geradeaus schaut
+        bomberModel.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = false; // Heroes don't receive shadows for better visibility
+            if (child.material && child.material.map) {
+              child.material.map.colorSpace = THREE.SRGBColorSpace;
+              child.material.map.needsUpdate = true;
+            }
+          }
+        });
+        group.add(bomberModel);
+        group.userData.bomberModel = bomberModel;
+
+        // Bombe laden und vor dem Körper auf Bauchhöhe positionieren
+        bomberLoader.load('/glb/Bomber/Bombe.glb', (bombGltf) => {
+          const bombModel = bombGltf.scene;
+          bombModel.name = 'BombInHand';
+          bombModel.scale.setScalar(scale * 0.4);
+          // Bombe vor dem Körper auf Bauchhöhe: x=0 (mittig), y=Bauchhöhe, z=vorne
+          bombModel.position.set(0, 1.0 * scale, 0.6 * scale);
+          bombModel.rotation.y = Math.PI / 2; // Gleiche Drehung wie Bomber
+          bombModel.traverse((child) => {
+            if (child.isMesh) {
+              child.castShadow = true;
+              child.receiveShadow = false; // Heroes don't receive shadows for better visibility
+              if (child.material && child.material.map) {
+                child.material.map.colorSpace = THREE.SRGBColorSpace;
+                child.material.map.needsUpdate = true;
+              }
+            }
+          });
+          group.add(bombModel);
+          group.userData.bombInHand = bombModel;
+
+          // Placeholder entfernen
+          if (group.userData.placeholder) {
+            group.remove(group.userData.placeholder);
+            group.userData.placeholder = null;
+          }
+          group.userData.modelLoaded = true;
+          console.log('Bomber Hero GLB model loaded successfully');
+        }, undefined, (error) => {
+          console.error('Error loading Bombe.glb:', error);
+          // Fallback-Bombe
+          const fallbackBomb = new THREE.Mesh(
+            new THREE.SphereGeometry(0.25, 12, 12),
+            new THREE.MeshStandardMaterial({ color: 0x1a1a1a })
+          );
+          fallbackBomb.position.set(0.4 * scale, 1.0 * scale, 0.3 * scale);
+          group.add(fallbackBomb);
+          group.userData.bombInHand = fallbackBomb;
+
+          if (group.userData.placeholder) {
+            group.remove(group.userData.placeholder);
+            group.userData.placeholder = null;
+          }
+          group.userData.modelLoaded = true;
+        });
+      }, undefined, (error) => {
+        console.error('Error loading Bomber.glb:', error);
+        // Fallback: Prozeduraler Bomber
+        const fallback = createGuineaPig('bomber', false, scale);
+        while (fallback.children.length > 0) {
+          group.add(fallback.children[0]);
+        }
+        if (group.userData.placeholder) {
+          group.remove(group.userData.placeholder);
+          group.userData.placeholder = null;
+        }
+        group.userData.modelLoaded = true;
+      });
+
+      // HP Bar
+      const hpBg = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.5, 0.15),
+        new THREE.MeshBasicMaterial({ color: 0x333333 })
+      );
+      hpBg.position.set(0, 2.2, 0);
+      hpBg.rotation.x = -0.5;
+      group.add(hpBg);
+
+      const hpBar = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.45, 0.12),
+        new THREE.MeshBasicMaterial({ color: 0x00FF00 })
+      );
+      hpBar.position.set(0, 2.22, 0.01);
+      hpBar.rotation.x = -0.5;
+      group.add(hpBar);
+      group.userData.hpBar = hpBar;
+
+      group.scale.setScalar(scale);
+      return group;
+    }
+
+    // Geworfene Bombe erstellen (Projektil)
+    function createThrownBomb(start, target, damage, splashRadius, isBoss = false) {
+      const group = new THREE.Group();
+
+      const bomberLoader = new GLTFLoader();
+      const scale = isBoss ? 1.2 : 0.8;
+
+      // Lade das Bomben-Modell für das Projektil
+      bomberLoader.load('/glb/Bomber/Bombe.glb', (gltf) => {
+        const bombModel = gltf.scene;
+        bombModel.scale.setScalar(scale);
+        bombModel.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            if (child.material && child.material.map) {
+              child.material.map.colorSpace = THREE.SRGBColorSpace;
+              child.material.map.needsUpdate = true;
+            }
+          }
+        });
+        group.add(bombModel);
+
+        // Placeholder entfernen wenn vorhanden
+        if (group.userData.placeholder) {
+          group.remove(group.userData.placeholder);
+          group.userData.placeholder = null;
+        }
+      }, undefined, () => {
+        // Fallback Bombe
+        const fallback = new THREE.Mesh(
+          new THREE.SphereGeometry(0.3 * scale, 12, 12),
+          new THREE.MeshStandardMaterial({ color: 0x1a1a1a })
+        );
+        group.add(fallback);
+        if (group.userData.placeholder) {
+          group.remove(group.userData.placeholder);
+          group.userData.placeholder = null;
+        }
+      });
+
+      // Placeholder während Laden
+      const placeholder = new THREE.Mesh(
+        new THREE.SphereGeometry(0.3 * scale, 8, 8),
+        new THREE.MeshStandardMaterial({ color: 0x1a1a1a })
+      );
+      group.add(placeholder);
+      group.userData.placeholder = placeholder;
+
+      // Zündschnur-Effekt (Partikel)
+      const fuseGeo = new THREE.SphereGeometry(0.08, 6, 6);
+      const fuseMat = new THREE.MeshBasicMaterial({
+        color: 0xFF4500,
+        emissive: 0xFF4500,
+        emissiveIntensity: 1
+      });
+      const fuse = new THREE.Mesh(fuseGeo, fuseMat);
+      fuse.position.y = 0.35 * scale;
+      group.add(fuse);
+      group.userData.fuse = fuse;
+
+      group.position.copy(start);
+      group.position.y = start.y || 1;
+
+      // Berechne Wurfbahn (parabolisch)
+      const dir = new THREE.Vector3().subVectors(target, start);
+      const distance = dir.length();
+      dir.normalize();
+
+      group.userData = {
+        ...group.userData,
+        type: 'bomb',
+        velocity: dir.multiplyScalar(0.25),
+        verticalVelocity: 0.15, // Aufwärts für Bogen
+        gravity: 0.008,
+        damage: damage,
+        splashRadius: splashRadius,
+        targetY: 0,
+        startY: start.y || 1,
+        progress: 0,
+        maxProgress: distance / 0.25,
+        isBoss,
+      };
+
+      return group;
+    }
+
     // ============== CARROTS ==============
     const carrots = [];
-    
+    let cachedCarrotModel = null;
+
+    // Preload carrot GLB model
+    const carrotLoader = new GLTFLoader();
+    carrotLoader.load(
+      '/glb/vegetables/Karotte.glb',
+      (gltf) => {
+        cachedCarrotModel = gltf.scene;
+        cachedCarrotModel.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
+        console.log('Carrot GLB model loaded successfully');
+      },
+      undefined,
+      (error) => {
+        console.warn('Failed to load carrot GLB model, using fallback:', error);
+      }
+    );
+
     function createCarrot(x, z, type = 'normal') {
       const group = new THREE.Group();
-      group.userData = { 
-        collected: false, 
+      group.userData = {
+        collected: false,
         type,
         value: type === 'golden' ? 5 : (type === 'blue' ? 3 : 1),
         effect: type === 'golden' ? 'bonus' : (type === 'blue' ? 'speed' : null),
       };
-      
+
       const colors = {
         normal: 0xFF6B35,
         golden: 0xFFD700,
         blue: 0x4169E1,
       };
-      
-      const bodyGeo = new THREE.ConeGeometry(0.14, 0.55, 8);
-      const bodyMat = new THREE.MeshStandardMaterial({ 
-        color: colors[type],
-        emissive: type !== 'normal' ? colors[type] : 0x000000,
-        emissiveIntensity: type !== 'normal' ? 0.3 : 0,
-      });
-      const body = new THREE.Mesh(bodyGeo, bodyMat);
-      body.rotation.x = Math.PI;
-      body.position.y = 0.28;
-      body.castShadow = true;
-      group.add(body);
 
-      for (let i = 0; i < 3; i++) {
-        const leafGeo = new THREE.ConeGeometry(0.035, 0.22, 4);
-        const leafMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
-        const leaf = new THREE.Mesh(leafGeo, leafMat);
-        leaf.position.set((Math.random() - 0.5) * 0.08, 0.6, (Math.random() - 0.5) * 0.08);
-        leaf.rotation.x = (Math.random() - 0.5) * 0.3;
-        group.add(leaf);
+      // Use GLB model if loaded, otherwise use fallback geometry
+      if (cachedCarrotModel) {
+        const carrotModel = cachedCarrotModel.clone();
+        carrotModel.scale.setScalar(0.4);
+        carrotModel.position.y = 0.1;
+
+        // Apply color tint for special carrot types
+        if (type !== 'normal') {
+          carrotModel.traverse((child) => {
+            if (child.isMesh) {
+              child.material = child.material.clone();
+              child.material.emissive = new THREE.Color(colors[type]);
+              child.material.emissiveIntensity = 0.4;
+            }
+          });
+        }
+
+        group.add(carrotModel);
+      } else {
+        // Fallback: procedural carrot geometry
+        const bodyGeo = new THREE.ConeGeometry(0.14, 0.55, 8);
+        const bodyMat = new THREE.MeshStandardMaterial({
+          color: colors[type],
+          emissive: type !== 'normal' ? colors[type] : 0x000000,
+          emissiveIntensity: type !== 'normal' ? 0.3 : 0,
+        });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.rotation.x = Math.PI;
+        body.position.y = 0.28;
+        body.castShadow = true;
+        group.add(body);
+
+        for (let i = 0; i < 3; i++) {
+          const leafGeo = new THREE.ConeGeometry(0.035, 0.22, 4);
+          const leafMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+          const leaf = new THREE.Mesh(leafGeo, leafMat);
+          leaf.position.set((Math.random() - 0.5) * 0.08, 0.6, (Math.random() - 0.5) * 0.08);
+          leaf.rotation.x = (Math.random() - 0.5) * 0.3;
+          group.add(leaf);
+        }
       }
 
+      // Glow ring (always shown)
       const ringGeo = new THREE.RingGeometry(0.28, 0.36, 32);
-      const ringMat = new THREE.MeshBasicMaterial({ 
-        color: colors[type], 
-        side: THREE.DoubleSide, 
-        transparent: true, 
-        opacity: 0.4 
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: colors[type],
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.4
       });
       const ring = new THREE.Mesh(ringGeo, ringMat);
       ring.rotation.x = -Math.PI / 2;
@@ -1121,10 +1523,81 @@ export default function GuineaPigTDRoguelike() {
     setMaxBaseHealth(gameState.maxBaseHealth);
     setPhase('day');
 
-    // Player
-    const player = createGuineaPig('player', true, 1.3);
-    player.position.set(0, 0, 10);
-    scene.add(player);
+    // Player - Load GLB model with wheelbarrow and sweat drops
+    const gltfLoader = new GLTFLoader();
+    let player = null;
+    let playerModelLoaded = false;
+
+    // Create player group that will hold the GLB model
+    const playerGroup = new THREE.Group();
+    playerGroup.userData = {
+      type: 'player',
+      isPlayer: true,
+      isPartner: false,
+      isCollector: false,
+      health: 100,
+      maxHealth: 100,
+      attackCooldown: 0,
+      abilityCooldown: 0,
+      targetRotation: 0,
+      radius: 0.8 * 1.3,
+      targetPos: new THREE.Vector3(),
+      waitTime: 0,
+      carryingCarrots: 0,
+      maxCarry: 2 + getSkillEffect('collectorCapacity'),
+      speed: 0.025,
+      attackRange: 5,
+      attackDamage: 18,
+      velocityX: 0,
+      velocityZ: 0,
+    };
+    playerGroup.position.set(0, 0, 10);
+    scene.add(playerGroup);
+    player = playerGroup;
+
+    // Load the GLB model asynchronously
+    gltfLoader.load(
+      '/glb/Maincharacter/Maincharacter.glb',
+      (gltf) => {
+        const model = gltf.scene;
+        // Scale and position the model appropriately
+        model.scale.setScalar(3.0);
+        model.position.y = 0.8; // Lift model above ground
+        // Rotate to face forward (adjust as needed)
+        model.rotation.y = Math.PI / 2;
+        // Enable shadows and fix textures for all meshes
+        model.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = false; // Heroes don't receive shadows for better visibility
+            // Fix texture encoding/colorSpace for proper display
+            if (child.material) {
+              if (child.material.map) {
+                child.material.map.colorSpace = THREE.SRGBColorSpace;
+                child.material.map.needsUpdate = true;
+              }
+              // Ensure material is visible
+              child.material.needsUpdate = true;
+            }
+          }
+        });
+        playerGroup.add(model);
+        playerModelLoaded = true;
+        console.log('Player GLB model loaded successfully');
+      },
+      (progress) => {
+        console.log('Loading player model:', (progress.loaded / progress.total * 100).toFixed(0) + '%');
+      },
+      (error) => {
+        console.error('Error loading player GLB model:', error);
+        // Fallback: create procedural guinea pig if GLB fails to load
+        const fallbackPlayer = createGuineaPig('player', true, 1.3);
+        // Copy children to playerGroup
+        while (fallbackPlayer.children.length > 0) {
+          playerGroup.add(fallbackPlayer.children[0]);
+        }
+      }
+    );
 
     // Partners
     const partners = [
@@ -1144,7 +1617,15 @@ export default function GuineaPigTDRoguelike() {
     const heroTypes = ['tunneler', 'shadow', 'bomber', 'healer', 'tank', 'assassin'];
     const defenders = [];
     if (getSkillEffect('startHero')) {
-      const startHero = createGuineaPig(heroTypes[Math.floor(Math.random() * heroTypes.length)], false, 1.2);
+      const startHeroType = heroTypes[Math.floor(Math.random() * heroTypes.length)];
+      let startHero;
+      if (startHeroType === 'healer') {
+        startHero = createHealerTank(1.2);
+      } else if (startHeroType === 'bomber') {
+        startHero = createBomberHero(1.2);
+      } else {
+        startHero = createGuineaPig(startHeroType, false, 1.2);
+      }
       startHero.position.set(5, 0, 5);
       startHero.userData.placed = true;
       scene.add(startHero);
@@ -1156,6 +1637,101 @@ export default function GuineaPigTDRoguelike() {
     const effects = [];
     const collectors = [];
     const buildingObjects = [];
+
+    // Building preview ghost
+    let previewGhost = null;
+    let currentPreviewType = null;
+    let wallDragStartPos = null;
+    let wallPreviewLine = null;
+    let wallPreviewGhosts = []; // Array of ghost walls for multi-preview
+
+    // Create placement indicator ring
+    const validPlacementMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 });
+    const invalidPlacementMat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.5 });
+    const placementRingGeo = new THREE.RingGeometry(0.8, 1.2, 32);
+    const placementRing = new THREE.Mesh(placementRingGeo, validPlacementMat);
+    placementRing.rotation.x = -Math.PI / 2;
+    placementRing.position.y = 0.05;
+    placementRing.visible = false;
+    scene.add(placementRing);
+
+    // Wall drag preview line
+    function createWallPreviewLine() {
+      const points = [new THREE.Vector3(0, 0.5, 0), new THREE.Vector3(0, 0.5, 0)];
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      const material = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2 });
+      const line = new THREE.Line(geometry, material);
+      line.visible = false;
+      scene.add(line);
+      return line;
+    }
+    wallPreviewLine = createWallPreviewLine();
+
+    function createPreviewGhost(type) {
+      if (previewGhost) {
+        scene.remove(previewGhost);
+        previewGhost = null;
+      }
+
+      const ghost = createGuineaPigHouse(type);
+      // Make it semi-transparent
+      ghost.traverse((child) => {
+        if (child.isMesh) {
+          child.material = child.material.clone();
+          child.material.transparent = true;
+          child.material.opacity = 0.5;
+          child.material.depthWrite = false;
+        }
+      });
+      ghost.visible = false;
+      scene.add(ghost);
+      previewGhost = ghost;
+      currentPreviewType = type;
+      return ghost;
+    }
+
+    function updatePreviewPosition(x, z, rotation, isValid) {
+      if (!previewGhost) return;
+      previewGhost.position.set(x, 0, z);
+      previewGhost.rotation.y = rotation * Math.PI / 180;
+      previewGhost.visible = true;
+
+      // Update placement ring
+      placementRing.position.set(x, 0.05, z);
+      placementRing.visible = true;
+      placementRing.material = isValid ? validPlacementMat : invalidPlacementMat;
+
+      // Update ghost color based on validity
+      previewGhost.traverse((child) => {
+        if (child.isMesh && child.material.opacity !== undefined) {
+          child.material.opacity = isValid ? 0.6 : 0.3;
+          if (!isValid) {
+            child.material.emissive = new THREE.Color(0xff0000);
+            child.material.emissiveIntensity = 0.3;
+          } else {
+            child.material.emissive = new THREE.Color(0x00ff00);
+            child.material.emissiveIntensity = 0.2;
+          }
+        }
+      });
+    }
+
+    function hidePreview() {
+      if (previewGhost) previewGhost.visible = false;
+      placementRing.visible = false;
+    }
+
+    function checkPlacementValid(x, z, collisionRadius = 2.5) {
+      const dist = Math.sqrt(x * x + z * z);
+      if (dist < 6 || dist > 14) return false;
+
+      for (const b of buildingObjects) {
+        const dx = b.position.x - x;
+        const dz = b.position.z - z;
+        if (Math.sqrt(dx * dx + dz * dz) < collisionRadius) return false;
+      }
+      return true;
+    }
 
     // Initial carrots
     for (let i = 0; i < 30; i++) spawnCarrot();
@@ -1174,6 +1750,7 @@ export default function GuineaPigTDRoguelike() {
 
     let enemiesToSpawn = [];
     let spawnTimer = 0;
+    const thrownBombs = []; // Array für geworfene Bomben
 
     function startWave(waveNum) {
       const config = WAVES[Math.min(waveNum, WAVES.length - 1)];
@@ -1181,7 +1758,7 @@ export default function GuineaPigTDRoguelike() {
       for (let i = 0; i < config.foxes; i++) enemiesToSpawn.push('fox');
       for (let i = 0; i < config.ravens; i++) enemiesToSpawn.push('raven');
       for (let i = 0; i < config.snakes; i++) enemiesToSpawn.push('snake');
-      
+
       // Add boss
       if (config.boss) {
         gameState.bossWave = true;
@@ -1189,12 +1766,12 @@ export default function GuineaPigTDRoguelike() {
         if (config.boss === 'fox' || config.boss === 'both') enemiesToSpawn.push('boss_fox');
         if (config.boss === 'raven' || config.boss === 'both') enemiesToSpawn.push('boss_raven');
       }
-      
+
       enemiesToSpawn.sort(() => Math.random() - 0.5);
       // Put bosses at end
       const bosses = enemiesToSpawn.filter(e => e.startsWith('boss'));
       enemiesToSpawn = enemiesToSpawn.filter(e => !e.startsWith('boss')).concat(bosses);
-      
+
       spawnTimer = 0;
       setMessage(`🌙 Welle ${waveNum + 1}${config.boss ? ' - BOSS!' : ''}`);
       setTimeout(() => setMessage(''), 2500);
@@ -1205,21 +1782,21 @@ export default function GuineaPigTDRoguelike() {
       const type = enemiesToSpawn.shift();
       const angle = Math.random() * Math.PI * 2;
       const radius = 38;
-      
+
       let enemy;
       if (type === 'boss_fox') enemy = createFox(true);
       else if (type === 'boss_raven') enemy = createRaven(true);
       else if (type === 'fox') enemy = createFox();
       else if (type === 'raven') enemy = createRaven();
       else enemy = createSnake();
-      
+
       enemy.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
       scene.add(enemy);
       enemies.push(enemy);
     }
 
     // ============== WEATHER SYSTEM ==============
-    const WEATHERS = ['sunny', 'rainy', 'foggy', 'windy'];
+    const WEATHERS = ['sunny', 'rainy', 'windy'];
     
     function changeWeather() {
       const weatherMasterLevel = getSkillEffect('weatherMaster');
@@ -1237,17 +1814,10 @@ export default function GuineaPigTDRoguelike() {
       
       // Visual effects
       rain.visible = newWeather === 'rainy';
-      fogPlanes.forEach(f => f.visible = newWeather === 'foggy');
-      
-      if (newWeather === 'foggy') {
-        scene.fog = new THREE.Fog(0xCCCCCC, 15, 40);
-      } else if (newWeather === 'rainy') {
-        scene.fog = new THREE.Fog(0x6688AA, 30, 70);
+
+      if (newWeather === 'rainy') {
         lights.sun.intensity = 0.8;
       } else {
-        scene.fog = gameState.phase === 'night' 
-          ? new THREE.Fog(0x1a1a3a, 25, 60)
-          : new THREE.Fog(0x87CEEB, 40, 100);
         lights.sun.intensity = gameState.phase === 'night' ? 0.25 : 1.5;
       }
     }
@@ -1256,28 +1826,35 @@ export default function GuineaPigTDRoguelike() {
     const joystick = { active: false, startX: 0, startY: 0, moveX: 0, moveZ: 0 };
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    let buildGhost = null;
+    let touchBuildStart = null;
 
     function handleTouchStart(e) {
       const touch = e.touches[0];
       const rect = containerRef.current.getBoundingClientRect();
-      
+
       // Check if in build mode
       if (gameState.phase === 'day' && gameRef.current.buildMode) {
         pointer.x = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
         pointer.y = -((touch.clientY - rect.top) / rect.height) * 2 + 1;
-        
+
         raycaster.setFromCamera(pointer, camera);
         const intersects = raycaster.intersectObject(ground);
         if (intersects.length > 0) {
           const pos = intersects[0].point;
-          // Snap to grid
           const gridX = Math.round(pos.x / 2) * 2;
           const gridZ = Math.round(pos.z / 2) * 2;
-          const dist = Math.sqrt(gridX*gridX + gridZ*gridZ);
-          
-          if (dist >= 6 && dist <= 14) {
-            placeBuilding(gridX, gridZ);
+
+          // For walls, start drag mode - use exact position
+          if (gameRef.current.buildMode === 'wall') {
+            touchBuildStart = { x: pos.x, z: pos.z };
+            wallDragStartPos = { x: pos.x, z: pos.z };
+          } else {
+            // Regular building - place immediately
+            const dist = Math.sqrt(gridX * gridX + gridZ * gridZ);
+            if (dist >= 6 && dist <= 14) {
+              const rotation = gameRef.current.buildRotation || 0;
+              placeBuildingWithRotation(gridX, gridZ, rotation);
+            }
           }
         }
         return;
@@ -1289,18 +1866,75 @@ export default function GuineaPigTDRoguelike() {
     }
 
     function handleTouchMove(e) {
+      const touch = e.touches[0];
+      const rect = containerRef.current.getBoundingClientRect();
+
+      // Update wall drag preview on touch
+      if (gameState.phase === 'day' && gameRef.current.buildMode === 'wall' && touchBuildStart) {
+        e.preventDefault();
+        pointer.x = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((touch.clientY - rect.top) / rect.height) * 2 + 1;
+
+        raycaster.setFromCamera(pointer, camera);
+        const intersects = raycaster.intersectObject(ground);
+        if (intersects.length > 0) {
+          const pos = intersects[0].point;
+          // Use exact position for preview
+          updateWallPreviewLine(touchBuildStart.x, touchBuildStart.z, pos.x, pos.z);
+        }
+        return;
+      }
+
       if (!joystick.active) return;
       e.preventDefault();
-      const touch = e.touches[0];
       const dx = touch.clientX - joystick.startX;
       const dy = touch.clientY - joystick.startY;
       const maxDist = 60;
-      
+
       joystick.moveX = Math.max(-1, Math.min(1, dx / maxDist));
       joystick.moveZ = Math.max(-1, Math.min(1, dy / maxDist));
     }
 
-    function handleTouchEnd() {
+    function handleTouchEnd(e) {
+      // Handle wall drag end on touch
+      if (gameState.phase === 'day' && gameRef.current.buildMode === 'wall' && touchBuildStart) {
+        const touch = e.changedTouches[0];
+        const rect = containerRef.current.getBoundingClientRect();
+        pointer.x = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((touch.clientY - rect.top) / rect.height) * 2 + 1;
+
+        raycaster.setFromCamera(pointer, camera);
+        const intersects = raycaster.intersectObject(ground);
+        if (intersects.length > 0) {
+          const pos = intersects[0].point;
+          // Use exact position for wall placement
+          const endX = pos.x;
+          const endZ = pos.z;
+
+          const positions = getWallPositionsAlongLine(touchBuildStart.x, touchBuildStart.z, endX, endZ);
+
+          let wallsPlaced = 0;
+          for (const wallPos of positions) {
+            // Each wall has its own rotation from the angle property
+            if (checkPlacementValid(wallPos.x, wallPos.z, 1.5)) {
+              if (placeBuildingWithRotation(wallPos.x, wallPos.z, wallPos.angle)) {
+                wallsPlaced++;
+              }
+            }
+          }
+
+          if (wallsPlaced > 0) {
+            setMessage(`${wallsPlaced} Mauer${wallsPlaced > 1 ? 'n' : ''} gebaut!`);
+            setTimeout(() => setMessage(''), 1500);
+          }
+        }
+
+        touchBuildStart = null;
+        wallDragStartPos = null;
+        hideWallPreviewGhosts();
+        return;
+      }
+
       joystick.active = false;
       joystick.moveX = 0;
       joystick.moveZ = 0;
@@ -1310,33 +1944,286 @@ export default function GuineaPigTDRoguelike() {
     containerRef.current.addEventListener('touchmove', handleTouchMove, { passive: false });
     containerRef.current.addEventListener('touchend', handleTouchEnd);
 
+    // Mouse move for preview ghost
+    let lastMousePos = { x: 0, z: 0 };
+    function handleMouseMove(e) {
+      if (gameState.phase !== 'day' || !gameRef.current.buildMode) {
+        hidePreview();
+        return;
+      }
+
+      const rect = containerRef.current.getBoundingClientRect();
+      pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(pointer, camera);
+      const intersects = raycaster.intersectObject(ground);
+      if (intersects.length > 0) {
+        const pos = intersects[0].point;
+        const gridX = Math.round(pos.x / 2) * 2;
+        const gridZ = Math.round(pos.z / 2) * 2;
+        lastMousePos = { x: gridX, z: gridZ };
+
+        // Create or update preview ghost
+        const type = gameRef.current.buildMode;
+        if (currentPreviewType !== type) {
+          createPreviewGhost(type);
+        }
+
+        const isValid = checkPlacementValid(gridX, gridZ);
+        const rotation = gameRef.current.buildRotation || 0;
+        updatePreviewPosition(gridX, gridZ, rotation, isValid);
+
+        // Update wall drag preview line - use exact position
+        if (type === 'wall' && wallDragStartPos) {
+          updateWallPreviewLine(wallDragStartPos.x, wallDragStartPos.z, pos.x, pos.z);
+        }
+      } else {
+        hidePreview();
+      }
+    }
+    containerRef.current.addEventListener('mousemove', handleMouseMove);
+
+    // Calculate wall positions along a line - walls placed exactly along the line without gaps
+    function getWallPositionsAlongLine(x1, z1, x2, z2) {
+      const positions = [];
+      const dx = x2 - x1;
+      const dz = z2 - z1;
+      const distance = Math.sqrt(dx * dx + dz * dz);
+
+      // If only start point (click without drag), place single wall at start
+      if (distance < 0.5) {
+        return [{ x: x1, z: z1, angle: 0 }];
+      }
+
+      // Wall width is 2 units, place walls exactly along the line
+      const wallSpacing = 2; // Walls are 2 units wide
+      const numWalls = Math.max(1, Math.ceil(distance / wallSpacing));
+
+      // Calculate the angle for all walls - wall is aligned along the line
+      const angle = Math.atan2(dz, dx) * 180 / Math.PI;
+
+      for (let i = 0; i < numWalls; i++) {
+        // Place walls at exact positions along the line (not grid-snapped)
+        const t = numWalls === 1 ? 0.5 : i / (numWalls - 1);
+        const x = x1 + dx * t;
+        const z = z1 + dz * t;
+        positions.push({ x, z, angle });
+      }
+
+      return positions;
+    }
+
+    // Calculate wall rotation based on line direction (in degrees)
+    function getWallRotationFromLine(x1, z1, x2, z2) {
+      return Math.atan2(z2 - z1, x2 - x1) * 180 / Math.PI;
+    }
+
+    // Create a single wall preview ghost
+    function createWallGhost() {
+      const ghost = createGuineaPigHouse('wall');
+      ghost.traverse((child) => {
+        if (child.isMesh) {
+          child.material = child.material.clone();
+          child.material.transparent = true;
+          child.material.opacity = 0.5;
+          child.material.depthWrite = false;
+          child.material.emissive = new THREE.Color(0x00ff00);
+          child.material.emissiveIntensity = 0.2;
+        }
+      });
+      ghost.visible = false;
+      scene.add(ghost);
+      return ghost;
+    }
+
+    // Update wall preview with multiple ghost walls
+    function updateWallPreviewLine(x1, z1, x2, z2) {
+      const positions = getWallPositionsAlongLine(x1, z1, x2, z2);
+
+      // Create more ghosts if needed
+      while (wallPreviewGhosts.length < positions.length) {
+        wallPreviewGhosts.push(createWallGhost());
+      }
+
+      // Update ghost positions and rotations
+      for (let i = 0; i < wallPreviewGhosts.length; i++) {
+        if (i < positions.length) {
+          const pos = positions[i];
+          const isValid = checkPlacementValid(pos.x, pos.z, 1.5);
+
+          wallPreviewGhosts[i].position.set(pos.x, 0, pos.z);
+          wallPreviewGhosts[i].rotation.y = pos.angle * Math.PI / 180;
+          wallPreviewGhosts[i].visible = true;
+
+          // Update color based on validity
+          wallPreviewGhosts[i].traverse((child) => {
+            if (child.isMesh) {
+              child.material.opacity = isValid ? 0.6 : 0.3;
+              child.material.emissive = isValid ? new THREE.Color(0x00ff00) : new THREE.Color(0xff0000);
+              child.material.emissiveIntensity = isValid ? 0.2 : 0.3;
+            }
+          });
+        } else {
+          // Hide unused ghosts
+          wallPreviewGhosts[i].visible = false;
+        }
+      }
+
+      // Also update the line for visual connection
+      if (wallPreviewLine && positions.length >= 2) {
+        const points = positions.map(pos => new THREE.Vector3(pos.x, 0.5, pos.z));
+        wallPreviewLine.geometry.dispose();
+        wallPreviewLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
+        wallPreviewLine.visible = true;
+      } else if (wallPreviewLine) {
+        wallPreviewLine.visible = false;
+      }
+    }
+
+    // Hide all wall preview ghosts
+    function hideWallPreviewGhosts() {
+      wallPreviewGhosts.forEach(ghost => ghost.visible = false);
+      if (wallPreviewLine) wallPreviewLine.visible = false;
+    }
+
+    // Mouse down for wall drag start
+    function handleMouseDown(e) {
+      if (gameState.phase !== 'day' || !gameRef.current.buildMode) return;
+      if (gameRef.current.buildMode !== 'wall') return;
+
+      const rect = containerRef.current.getBoundingClientRect();
+      pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(pointer, camera);
+      const intersects = raycaster.intersectObject(ground);
+      if (intersects.length > 0) {
+        const pos = intersects[0].point;
+        // Use exact position for wall drag start (not grid-snapped)
+        wallDragStartPos = { x: pos.x, z: pos.z };
+      }
+    }
+    containerRef.current.addEventListener('mousedown', handleMouseDown);
+
+    // Mouse up for wall drag end / regular building placement
+    function handleMouseUp(e) {
+      if (gameState.phase !== 'day' || !gameRef.current.buildMode) return;
+
+      const rect = containerRef.current.getBoundingClientRect();
+      pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(pointer, camera);
+      const intersects = raycaster.intersectObject(ground);
+      if (intersects.length > 0) {
+        const pos = intersects[0].point;
+        const gridX = Math.round(pos.x / 2) * 2;
+        const gridZ = Math.round(pos.z / 2) * 2;
+
+        const type = gameRef.current.buildMode;
+
+        if (type === 'wall' && wallDragStartPos) {
+          // Place multiple walls along the drag line - use exact positions from line
+          const endX = pos.x; // Use exact position, not grid-snapped
+          const endZ = pos.z;
+          const positions = getWallPositionsAlongLine(wallDragStartPos.x, wallDragStartPos.z, endX, endZ);
+
+          let wallsPlaced = 0;
+          for (const wallPos of positions) {
+            // Each wall has its own rotation from the angle property
+            if (checkPlacementValid(wallPos.x, wallPos.z, 1.5)) { // Smaller collision check for walls
+              if (placeBuildingWithRotation(wallPos.x, wallPos.z, wallPos.angle)) {
+                wallsPlaced++;
+              }
+            }
+          }
+
+          if (wallsPlaced > 0) {
+            setMessage(`${wallsPlaced} Mauer${wallsPlaced > 1 ? 'n' : ''} gebaut!`);
+            setTimeout(() => setMessage(''), 1500);
+          }
+
+          wallDragStartPos = null;
+          hideWallPreviewGhosts();
+        } else {
+          // Regular building placement
+          const dist = Math.sqrt(gridX * gridX + gridZ * gridZ);
+          if (dist >= 6 && dist <= 14) {
+            const rotation = gameRef.current.buildRotation || 0;
+            placeBuildingWithRotation(gridX, gridZ, rotation);
+          } else {
+            setMessage('Zu nah oder zu weit vom Zentrum!');
+            setTimeout(() => setMessage(''), 1500);
+          }
+        }
+      }
+
+      wallDragStartPos = null;
+      hideWallPreviewGhosts();
+    }
+    containerRef.current.addEventListener('mouseup', handleMouseUp);
+
+    // Zoom with mouse wheel
+    const handleWheel = (e) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 0.1 : -0.1;
+      zoomLevel = Math.max(minZoom, Math.min(maxZoom, zoomLevel + delta));
+    };
+    containerRef.current.addEventListener('wheel', handleWheel, { passive: false });
+
     // Keyboard
     const keys = { w: false, a: false, s: false, d: false };
-    const handleKeyDown = (e) => { const k = e.key.toLowerCase(); if (k in keys) keys[k] = true; };
+    const handleKeyDown = (e) => {
+      const k = e.key.toLowerCase();
+      if (k in keys) keys[k] = true;
+
+      // R key to rotate building
+      if (k === 'r' && gameRef.current.buildMode) {
+        const currentRotation = gameRef.current.buildRotation || 0;
+        const newRotation = (currentRotation + 45) % 360;
+        gameRef.current.buildRotation = newRotation;
+        setBuildRotation(newRotation);
+
+        // Update preview
+        if (previewGhost) {
+          previewGhost.rotation.y = newRotation * Math.PI / 180;
+        }
+      }
+
+      // Escape to cancel build mode
+      if (e.key === 'Escape' && gameRef.current.buildMode) {
+        window.gameCancelBuild && window.gameCancelBuild();
+      }
+    };
     const handleKeyUp = (e) => { const k = e.key.toLowerCase(); if (k in keys) keys[k] = false; };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
 
     // ============== BUILDING FUNCTIONS ==============
-    function placeBuilding(x, z) {
+    function placeBuildingWithRotation(x, z, rotation = 0, showMessage = true) {
       const type = gameRef.current.buildMode;
-      if (!type) return;
-      
+      if (!type) return false;
+
       const cost = getBuildingCost(type);
       if (gameState.score < cost) {
-        setMessage('Nicht genug Karotten!');
-        setTimeout(() => setMessage(''), 1500);
-        return;
+        if (showMessage) {
+          setMessage('Nicht genug Karotten!');
+          setTimeout(() => setMessage(''), 1500);
+        }
+        return false;
       }
 
       // Check if spot is free
       for (const b of buildingObjects) {
         const dx = b.position.x - x;
         const dz = b.position.z - z;
-        if (Math.sqrt(dx*dx + dz*dz) < 2.5) {
-          setMessage('Platz belegt!');
-          setTimeout(() => setMessage(''), 1500);
-          return;
+        if (Math.sqrt(dx * dx + dz * dz) < 2.5) {
+          if (showMessage) {
+            setMessage('Platz belegt!');
+            setTimeout(() => setMessage(''), 1500);
+          }
+          return false;
         }
       }
 
@@ -1345,17 +2232,28 @@ export default function GuineaPigTDRoguelike() {
 
       const building = createGuineaPigHouse(type);
       building.position.set(x, 0, z);
+      building.rotation.y = rotation * Math.PI / 180;
+      building.userData.rotation = rotation;
       scene.add(building);
       buildingObjects.push(building);
-      setBuildings([...buildingObjects.map(b => ({ type: b.userData.type, x: b.position.x, z: b.position.z }))]);
+      setBuildings([...buildingObjects.map(b => ({ type: b.userData.type, x: b.position.x, z: b.position.z, rotation: b.userData.rotation || 0 }))]);
 
-      setMessage(`${type === 'collectorHut' ? 'Sammler-Hütte' : type === 'heroHut' ? 'Helden-Hütte' : type === 'tower' ? 'Wachturm' : 'Mauer'} gebaut!`);
-      setTimeout(() => setMessage(''), 1500);
+      if (showMessage) {
+        setMessage(`${type === 'collectorHut' ? 'Sammler-Hütte' : type === 'heroHut' ? 'Helden-Hütte' : type === 'tower' ? 'Wachturm' : 'Mauer'} gebaut!`);
+        setTimeout(() => setMessage(''), 1500);
+      }
 
       // Spawn initial collector
       if (type === 'collectorHut') {
         spawnCollector(x, z);
       }
+
+      return true;
+    }
+
+    // Legacy function for compatibility
+    function placeBuilding(x, z) {
+      return placeBuildingWithRotation(x, z, gameRef.current.buildRotation || 0);
     }
 
     function spawnCollector(x, z) {
@@ -1369,7 +2267,17 @@ export default function GuineaPigTDRoguelike() {
 
     function spawnHero(x, z) {
       const heroType = heroTypes[Math.floor(Math.random() * heroTypes.length)];
-      const hero = createGuineaPig(heroType, false, 1.1);
+
+      // Spezieller Fall für GLB-Modelle
+      let hero;
+      if (heroType === 'healer') {
+        hero = createHealerTank(1.1);
+      } else if (heroType === 'bomber') {
+        hero = createBomberHero(1.1);
+      } else {
+        hero = createGuineaPig(heroType, false, 1.1);
+      }
+
       hero.position.set(x + 2, 0, z);
       hero.userData.placed = true;
       scene.add(hero);
@@ -1381,11 +2289,33 @@ export default function GuineaPigTDRoguelike() {
     // Expose to React
     window.gameBuild = (type) => {
       gameRef.current.buildMode = type;
+      gameRef.current.buildRotation = 0; // Reset rotation when selecting new building
       setBuildMode(type);
+      setBuildRotation(0);
+      createPreviewGhost(type);
     };
     window.gameCancelBuild = () => {
       gameRef.current.buildMode = null;
       setBuildMode(null);
+      hidePreview();
+      if (previewGhost) {
+        scene.remove(previewGhost);
+        previewGhost = null;
+        currentPreviewType = null;
+      }
+      wallDragStartPos = null;
+      hideWallPreviewGhosts();
+    };
+    window.gameRotateBuilding = () => {
+      if (gameRef.current.buildMode) {
+        const currentRotation = gameRef.current.buildRotation || 0;
+        const newRotation = (currentRotation + 45) % 360;
+        gameRef.current.buildRotation = newRotation;
+        setBuildRotation(newRotation);
+        if (previewGhost) {
+          previewGhost.rotation.y = newRotation * Math.PI / 180;
+        }
+      }
     };
     window.gameBreed = () => {
       if (gameState.score >= 15) {
@@ -1393,14 +2323,21 @@ export default function GuineaPigTDRoguelike() {
         if (nearest && nearest.dist < 3.5) {
           gameState.score -= 15;
           setScore(gameState.score);
-          
+
           const heroType = heroTypes[Math.floor(Math.random() * heroTypes.length)];
-          const hero = createGuineaPig(heroType, false, 1.1);
+          let hero;
+          if (heroType === 'healer') {
+            hero = createHealerTank(1.1);
+          } else if (heroType === 'bomber') {
+            hero = createBomberHero(1.1);
+          } else {
+            hero = createGuineaPig(heroType, false, 1.1);
+          }
           hero.position.set(player.position.x + 2, 0, player.position.z);
           hero.userData.placed = true;
           scene.add(hero);
           defenders.push(hero);
-          
+
           effects.push(...createHearts(player.position));
           setMessage(`💕 ${GUINEA_PIG_TYPES[heroType].name} geboren!`);
           setTimeout(() => setMessage(''), 2000);
@@ -1429,12 +2366,24 @@ export default function GuineaPigTDRoguelike() {
       gameState.phase = 'night';
       gameState.nightActive = true;
       setPhase('night');
-      
+
+      // Cancel build mode and hide previews
+      gameRef.current.buildMode = null;
+      setBuildMode(null);
+      hidePreview();
+      if (previewGhost) {
+        scene.remove(previewGhost);
+        previewGhost = null;
+        currentPreviewType = null;
+      }
+      wallDragStartPos = null;
+      hideWallPreviewGhosts();
+
       scene.background = new THREE.Color(0x1a1a3a);
       lights.sun.intensity = 0.25;
       lights.sun.color.setHex(0x6666AA);
       lights.ambient.intensity = 0.15;
-      
+
       partners.forEach(p => p.visible = false);
       changeWeather();
       startWave(gameState.wave);
@@ -1512,14 +2461,6 @@ export default function GuineaPigTDRoguelike() {
         rain.geometry.attributes.position.needsUpdate = true;
       }
 
-      if (gameState.weather === 'foggy') {
-        fogPlanes.forEach((f, i) => {
-          f.position.x += Math.sin(time + i) * 0.02;
-          f.position.z += Math.cos(time + i) * 0.02;
-          f.material.opacity = 0.2 + Math.sin(time * 0.5 + i) * 0.1;
-        });
-      }
-
       // Combo timer
       if (gameState.comboTimer > 0) {
         gameState.comboTimer -= dt;
@@ -1564,37 +2505,67 @@ export default function GuineaPigTDRoguelike() {
           if (Math.random() < 0.3) changeWeather();
         }
 
-        // Player movement
-        let baseSpeed = 0.06;
-        if (gameState.speedBoostTimer > 0) baseSpeed *= 1.5;
-        if (gameState.weather === 'windy') baseSpeed *= 1.2;
-        
-        let moveX = joystick.moveX;
-        let moveZ = joystick.moveZ;
-        if (keys.w) moveZ -= 1;
-        if (keys.s) moveZ += 1;
-        if (keys.a) moveX -= 1;
-        if (keys.d) moveX += 1;
+        // Player movement with smooth velocity
+        let maxSpeed = 0.08;
+        const acceleration = 0.008;
+        const friction = 0.88;
+        if (gameState.speedBoostTimer > 0) maxSpeed *= 1.5;
+        if (gameState.weather === 'windy') maxSpeed *= 1.2;
 
-        const isMoving = Math.abs(moveX) > 0.1 || Math.abs(moveZ) > 0.1;
-        
-        if (isMoving) {
-          const len = Math.sqrt(moveX * moveX + moveZ * moveZ);
-          if (len > 0) { moveX /= len; moveZ /= len; }
-          
-          const newX = player.position.x + moveX * baseSpeed;
-          const newZ = player.position.z + moveZ * baseSpeed;
-          
-          // Simple bounds
-          const dist = Math.sqrt(newX*newX + newZ*newZ);
-          if (dist < 35 && dist > 5) {
-            player.position.x = newX;
-            player.position.z = newZ;
+        let inputX = joystick.moveX;
+        let inputZ = joystick.moveZ;
+        if (keys.w) inputZ -= 1;
+        if (keys.s) inputZ += 1;
+        if (keys.a) inputX -= 1;
+        if (keys.d) inputX += 1;
+
+        const hasInput = Math.abs(inputX) > 0.1 || Math.abs(inputZ) > 0.1;
+
+        if (hasInput) {
+          const len = Math.sqrt(inputX * inputX + inputZ * inputZ);
+          if (len > 0) { inputX /= len; inputZ /= len; }
+
+          // Accelerate towards input direction
+          player.userData.velocityX += inputX * acceleration;
+          player.userData.velocityZ += inputZ * acceleration;
+
+          // Clamp to max speed
+          const currentSpeed = Math.sqrt(player.userData.velocityX ** 2 + player.userData.velocityZ ** 2);
+          if (currentSpeed > maxSpeed) {
+            player.userData.velocityX = (player.userData.velocityX / currentSpeed) * maxSpeed;
+            player.userData.velocityZ = (player.userData.velocityZ / currentSpeed) * maxSpeed;
           }
-          
-          player.userData.targetRotation = Math.atan2(-moveZ, moveX);
-          player.rotation.z = Math.sin(time * 8) * 0.08;
-          player.position.y = Math.abs(Math.sin(time * 8)) * 0.04;
+
+          player.userData.targetRotation = Math.atan2(-inputZ, inputX);
+        } else {
+          // Apply friction when no input
+          player.userData.velocityX *= friction;
+          player.userData.velocityZ *= friction;
+        }
+
+        // Apply velocity to position
+        const newX = player.position.x + player.userData.velocityX;
+        const newZ = player.position.z + player.userData.velocityZ;
+
+        // Simple bounds
+        const dist = Math.sqrt(newX*newX + newZ*newZ);
+        if (dist < 35 && dist > 5) {
+          player.position.x = newX;
+          player.position.z = newZ;
+        } else {
+          // Bounce off bounds slightly
+          player.userData.velocityX *= -0.3;
+          player.userData.velocityZ *= -0.3;
+        }
+
+        // Animation based on actual movement speed
+        const movementSpeed = Math.sqrt(player.userData.velocityX ** 2 + player.userData.velocityZ ** 2);
+        const isMoving = movementSpeed > 0.005;
+
+        if (isMoving) {
+          const animIntensity = Math.min(movementSpeed / maxSpeed, 1);
+          player.rotation.z = Math.sin(time * 10) * 0.1 * animIntensity;
+          player.position.y = Math.abs(Math.sin(time * 10)) * 0.05 * animIntensity;
         } else {
           player.rotation.z *= 0.9;
           player.position.y *= 0.9;
@@ -1603,7 +2574,7 @@ export default function GuineaPigTDRoguelike() {
         let rotDiff = player.userData.targetRotation - player.rotation.y;
         while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
         while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-        player.rotation.y += rotDiff * 0.12;
+        player.rotation.y += rotDiff * 0.15;
 
         // Partner movement
         partners.forEach((p, i) => {
@@ -1819,32 +2790,52 @@ export default function GuineaPigTDRoguelike() {
 
           // Find target (prioritize buildings, then base)
           let targetX = 0, targetZ = 0;
-          let targetBuilding = null;
-          
+          let targetBuilding = data.targetBuilding;
+
           if (!data.confused) {
-            // Check for buildings to attack
-            let nearestBuildingDist = Infinity;
-            buildingObjects.forEach(b => {
-              if (b.userData.health <= 0) return;
-              const dx = enemy.position.x - b.position.x;
-              const dz = enemy.position.z - b.position.z;
-              const d = Math.sqrt(dx*dx + dz*dz);
-              if (d < nearestBuildingDist && (data.type === 'snake' || Math.random() < 0.3)) {
-                nearestBuildingDist = d;
-                targetBuilding = b;
+            // Only search for new target if we don't have one or current is destroyed
+            const needNewTarget = !targetBuilding ||
+              targetBuilding.userData.health <= 0 ||
+              !buildingObjects.includes(targetBuilding);
+
+            if (needNewTarget) {
+              targetBuilding = null;
+              data.confusedTarget = null; // Reset confused target when getting new target
+              // Snakes always target buildings, others have 30% chance (decided once per enemy)
+              if (data.buildingTargeter === undefined) {
+                data.buildingTargeter = data.type === 'snake' || Math.random() < 0.3;
               }
-            });
-            
-            if (targetBuilding && nearestBuildingDist < 20) {
+
+              if (data.buildingTargeter) {
+                let nearestBuildingDist = Infinity;
+                buildingObjects.forEach(b => {
+                  if (b.userData.health <= 0) return;
+                  const dx = enemy.position.x - b.position.x;
+                  const dz = enemy.position.z - b.position.z;
+                  const d = Math.sqrt(dx*dx + dz*dz);
+                  if (d < nearestBuildingDist && d < 25) {
+                    nearestBuildingDist = d;
+                    targetBuilding = b;
+                  }
+                });
+              }
+              data.targetBuilding = targetBuilding;
+            }
+
+            if (targetBuilding) {
               targetX = targetBuilding.position.x;
               targetZ = targetBuilding.position.z;
-              data.targetBuilding = targetBuilding;
-            } else {
-              data.targetBuilding = null;
             }
           } else {
-            targetX = (Math.random() - 0.5) * 30;
-            targetZ = (Math.random() - 0.5) * 30;
+            // When confused, use cached random position
+            if (!data.confusedTarget) {
+              data.confusedTarget = {
+                x: (Math.random() - 0.5) * 30,
+                z: (Math.random() - 0.5) * 30
+              };
+            }
+            targetX = data.confusedTarget.x;
+            targetZ = data.confusedTarget.z;
           }
 
           const dx = targetX - enemy.position.x;
@@ -1874,7 +2865,12 @@ export default function GuineaPigTDRoguelike() {
               enemy.position.x += (dx / dist) * speed;
               enemy.position.z += (dz / dist) * speed;
             }
-            enemy.rotation.y = Math.atan2(-dz, dx);
+            // Smooth rotation interpolation to prevent jittering
+            const targetRot = Math.atan2(-dz, dx);
+            let rotDiff = targetRot - enemy.rotation.y;
+            while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+            while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+            enemy.rotation.y += rotDiff * 0.15;
             
             // Animations
             if (data.type === 'fox' || data.type === 'boss_fox') {
@@ -1892,7 +2888,7 @@ export default function GuineaPigTDRoguelike() {
             data.attackCooldown -= dt;
             if (data.attackCooldown <= 0) {
               data.attackCooldown = data.isBoss ? 1 : 1.5;
-              
+
               if (data.targetBuilding && data.targetBuilding.userData.health > 0) {
                 data.targetBuilding.userData.health -= data.damage;
                 if (data.targetBuilding.userData.health <= 0) {
@@ -1905,7 +2901,7 @@ export default function GuineaPigTDRoguelike() {
               } else {
                 gameState.baseHealth -= data.damage;
                 setBaseHealth(Math.max(0, Math.floor(gameState.baseHealth)));
-                
+
                 if (gameState.baseHealth <= 0) {
                   // Game over - award partial points
                   const earnedPoints = Math.floor(gameState.score / 10) + gameState.wave * 5;
@@ -1932,23 +2928,28 @@ export default function GuineaPigTDRoguelike() {
         // Defender AI
         const rageBonus = gameState.rageActive ? (1 + getSkillEffect('rageBonus') / 100) : 1;
         const critChance = getSkillEffect('critChance') / 100;
-        
+        const patrolRadius = 12; // Patrol within defense circle
+        const patrolMinRadius = 6;
+
         defenders.forEach(defender => {
           if (!defender.userData.placed) return;
           const data = defender.userData;
           data.attackCooldown -= dt;
           data.abilityCooldown -= dt;
+          if (!data.patrolTarget) data.patrolTarget = new THREE.Vector3();
+          if (data.patrolWait === undefined) data.patrolWait = 0;
 
-          let range = data.attackRange;
-          if (gameState.weather === 'foggy') range *= 0.7;
+          let attackRange = data.attackRange;
+          const sightRange = attackRange * 2.5; // Can see enemies further than attack range
 
+          // Find nearest enemy in sight range
           let nearestEnemy = null;
           let nearestDist = Infinity;
           enemies.forEach(enemy => {
             const dx = defender.position.x - enemy.position.x;
             const dz = defender.position.z - enemy.position.z;
             const d = Math.sqrt(dx * dx + dz * dz);
-            if (d < nearestDist && d < range) {
+            if (d < nearestDist && d < sightRange) {
               nearestDist = d;
               nearestEnemy = enemy;
             }
@@ -1959,9 +2960,26 @@ export default function GuineaPigTDRoguelike() {
             const dz = nearestEnemy.position.z - defender.position.z;
             defender.userData.targetRotation = Math.atan2(-dz, dx);
 
-            if (data.attackCooldown <= 0) {
-              data.attackCooldown = data.type === 'bomber' ? 2 : (data.type === 'assassin' ? 0.8 : 1.2);
-              
+            // Turret zur Feind-Ausrichtung (für GLB Healer)
+            if (data.isGLBModel && data.turret) {
+              const targetPos = nearestEnemy.position.clone();
+              targetPos.y = data.turret.position.y + defender.position.y;
+              data.turret.lookAt(targetPos);
+            }
+
+            // Move towards enemy if not in attack range
+            if (nearestDist > attackRange * 0.8) {
+              const moveSpeed = data.speed * 1.5;
+              const dirX = dx / nearestDist;
+              const dirZ = dz / nearestDist;
+              defender.position.x += dirX * moveSpeed;
+              defender.position.z += dirZ * moveSpeed;
+            }
+
+            // Attack if in range
+            if (nearestDist < attackRange && data.attackCooldown <= 0) {
+              data.attackCooldown = data.type === 'bomber' ? 2.5 : (data.type === 'assassin' ? 0.8 : 1.2);
+
               let damage = data.attackDamage * rageBonus;
               if (Math.random() < critChance) {
                 damage *= 2;
@@ -1969,9 +2987,26 @@ export default function GuineaPigTDRoguelike() {
               }
 
               if (data.type === 'bomber') {
-                const proj = createProjectile(defender.position, nearestEnemy.position, 'carrot');
-                scene.add(proj);
-                projectiles.push(proj);
+                // Bomber wirft Bombe auf Feinde
+                const bomb = createThrownBomb(
+                  defender.position.clone().add(new THREE.Vector3(0, 1.2, 0)),
+                  nearestEnemy.position.clone(),
+                  damage,
+                  data.splashRadius || 3,
+                  false
+                );
+                bomb.userData.targetEnemies = true;
+                scene.add(bomb);
+                thrownBombs.push(bomb);
+
+                // Animation: Bombe kurz ausblenden und wieder einblenden
+                if (data.bombInHand) {
+                  data.bombInHand.visible = false;
+                  setTimeout(() => {
+                    if (data.bombInHand) data.bombInHand.visible = true;
+                  }, 500);
+                }
+                effects.push(...createExplosion(defender.position, 0xFF6B35));
               } else {
                 nearestEnemy.userData.health -= damage;
               }
@@ -2025,13 +3060,55 @@ export default function GuineaPigTDRoguelike() {
             if (data.type === 'healer' && data.abilityCooldown <= 0) {
               defenders.forEach(other => {
                 if (other === defender) return;
-                const dx = defender.position.x - other.position.x;
-                const dz = defender.position.z - other.position.z;
-                if (Math.sqrt(dx*dx + dz*dz) < 6) {
+                const hdx = defender.position.x - other.position.x;
+                const hdz = defender.position.z - other.position.z;
+                if (Math.sqrt(hdx*hdx + hdz*hdz) < 6) {
                   other.userData.health = Math.min(other.userData.maxHealth, other.userData.health + 20);
                 }
               });
-              effects.push(...createHealEffect(defender.position));
+
+              // Effekt-Position anpassen für GLB-Modell (höher für Tank)
+              const effectPos = defender.position.clone();
+              if (data.isGLBModel) {
+                effectPos.y += 2;
+              }
+              effects.push(...createHealEffect(effectPos));
+            }
+          } else {
+            // No enemy in sight - patrol within the defense circle
+            data.patrolWait -= dt;
+
+            // GLB Healer: Umschau-Animation wenn keine Feinde
+            if (data.isGLBModel && data.healerBody) {
+              data.healerBody.rotation.y = Math.sin(time * 1.2) * 0.4;
+            }
+            // Turret macht langsame Patrol-Rotation
+            if (data.isGLBModel && data.turret) {
+              data.turret.rotation.y = Math.sin(time * 0.5) * 0.3;
+            }
+
+            // Check if reached patrol target or need new one
+            const toTargetX = data.patrolTarget.x - defender.position.x;
+            const toTargetZ = data.patrolTarget.z - defender.position.z;
+            const toTargetDist = Math.sqrt(toTargetX * toTargetX + toTargetZ * toTargetZ);
+
+            if (toTargetDist < 0.5 || data.patrolWait <= 0 || data.patrolTarget.x === 0 && data.patrolTarget.z === 0) {
+              // Pick new random patrol point within defense circle
+              const angle = Math.random() * Math.PI * 2;
+              const radius = patrolMinRadius + Math.random() * (patrolRadius - patrolMinRadius);
+              data.patrolTarget.x = Math.cos(angle) * radius;
+              data.patrolTarget.z = Math.sin(angle) * radius;
+              data.patrolWait = 3 + Math.random() * 2; // Wait 3-5 seconds before new target
+            }
+
+            // Move towards patrol target
+            if (toTargetDist > 0.5) {
+              const moveSpeed = data.speed * 0.8;
+              const dirX = toTargetX / toTargetDist;
+              const dirZ = toTargetZ / toTargetDist;
+              defender.position.x += dirX * moveSpeed;
+              defender.position.z += dirZ * moveSpeed;
+              defender.userData.targetRotation = Math.atan2(-dirZ, dirX);
             }
           }
 
@@ -2122,6 +3199,59 @@ export default function GuineaPigTDRoguelike() {
           }
         }
 
+        // Thrown bombs update (Held-Bomber wirft Bomben auf Feinde)
+        for (let i = thrownBombs.length - 1; i >= 0; i--) {
+          const bomb = thrownBombs[i];
+          const data = bomb.userData;
+
+          // Bewegung mit Parabel
+          bomb.position.x += data.velocity.x;
+          bomb.position.z += data.velocity.z;
+          data.verticalVelocity -= data.gravity;
+          bomb.position.y += data.verticalVelocity;
+
+          // Rotation für visuellen Effekt
+          bomb.rotation.x += 0.1;
+          bomb.rotation.z += 0.05;
+
+          // Zündschnur-Funken
+          if (data.fuse) {
+            data.fuse.material.color.setHSL(0.05 + Math.sin(time * 20) * 0.05, 1, 0.5);
+            data.fuse.scale.setScalar(0.8 + Math.sin(time * 15) * 0.3);
+          }
+
+          // Prüfe ob Bombe am Boden angekommen ist
+          if (bomb.position.y <= 0.1) {
+            // EXPLOSION!
+            effects.push(...createExplosion(bomb.position, 0xFF4500));
+            effects.push(...createExplosion(bomb.position, 0xFFAA00));
+
+            // Held-Bomber: Schaden an Feinden
+            if (data.targetEnemies) {
+              enemies.forEach(enemy => {
+                const dx = bomb.position.x - enemy.position.x;
+                const dz = bomb.position.z - enemy.position.z;
+                const dist = Math.sqrt(dx * dx + dz * dz);
+                if (dist < data.splashRadius) {
+                  const damageFactor = 1 - (dist / data.splashRadius);
+                  const damage = Math.floor(data.damage * damageFactor);
+                  enemy.userData.health -= damage;
+                }
+              });
+            }
+
+            // Bombe entfernen
+            scene.remove(bomb);
+            thrownBombs.splice(i, 1);
+          }
+
+          // Bombe zu weit weg? Entfernen
+          if (bomb.position.length() > 60 || bomb.position.y < -5) {
+            scene.remove(bomb);
+            thrownBombs.splice(i, 1);
+          }
+        }
+
         // Remove dead enemies
         for (let i = enemies.length - 1; i >= 0; i--) {
           if (enemies[i].userData.health <= 0) {
@@ -2188,13 +3318,17 @@ export default function GuineaPigTDRoguelike() {
         player.userData.crown.rotation.y = time * 1.5;
       }
 
-      // Camera
-      const camTarget = gameState.phase === 'night' 
+      // Camera with zoom
+      const camTarget = gameState.phase === 'night'
         ? new THREE.Vector3(0, 0, 0)
         : player.position.clone();
-      
+
+      const baseY = 28 / zoomLevel;
+      const baseZ = 28 / zoomLevel;
+
       camera.position.x += (camTarget.x - camera.position.x) * 0.03;
-      camera.position.z += (camTarget.z + 28 - camera.position.z) * 0.03;
+      camera.position.y += (baseY - camera.position.y) * 0.05;
+      camera.position.z += (camTarget.z + baseZ - camera.position.z) * 0.03;
       camera.lookAt(camTarget.x * 0.5, 0, camTarget.z * 0.5);
 
       renderer.render(scene, camera);
@@ -2214,6 +3348,18 @@ export default function GuineaPigTDRoguelike() {
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      if (containerRef.current) {
+        containerRef.current.removeEventListener('mousemove', handleMouseMove);
+        containerRef.current.removeEventListener('mousedown', handleMouseDown);
+        containerRef.current.removeEventListener('mouseup', handleMouseUp);
+        containerRef.current.removeEventListener('touchstart', handleTouchStart);
+        containerRef.current.removeEventListener('touchmove', handleTouchMove);
+        containerRef.current.removeEventListener('touchend', handleTouchEnd);
+        containerRef.current.removeEventListener('wheel', handleWheel);
+      }
+      // Clean up wall preview ghosts
+      wallPreviewGhosts.forEach(ghost => scene.remove(ghost));
+      wallPreviewGhosts = [];
       renderer.dispose();
     };
   }, [getSkillEffect, getBuildingCost]);
@@ -2370,14 +3516,6 @@ export default function GuineaPigTDRoguelike() {
     );
   }
 
-  if (phase === 'loading') {
-    return (
-      <div className="w-full h-screen bg-black flex items-center justify-center">
-        <div className="text-white text-xl">🐹 Laden...</div>
-      </div>
-    );
-  }
-
   // ============== GAME UI ==============
   const buildingCosts = {
     collectorHut: getBuildingCost('collectorHut'),
@@ -2389,6 +3527,13 @@ export default function GuineaPigTDRoguelike() {
   return (
     <div className="w-full h-screen bg-gray-900 relative overflow-hidden touch-none select-none">
       <div ref={containerRef} className="w-full h-full" />
+
+      {/* Loading Overlay */}
+      {phase === 'loading' && (
+        <div className="absolute inset-0 bg-black flex items-center justify-center z-50">
+          <div className="text-white text-xl">🐹 Laden...</div>
+        </div>
+      )}
       
       {/* HUD */}
       <div className="absolute top-0 left-0 right-0 p-3 flex justify-between items-start pointer-events-none">
@@ -2407,7 +3552,6 @@ export default function GuineaPigTDRoguelike() {
           <div className="bg-black/60 rounded-lg px-2 py-1 text-xs text-white">
             {weather === 'sunny' && '☀️ Sonnig'}
             {weather === 'rainy' && '🌧️ Regen (-20% Feind-Speed)'}
-            {weather === 'foggy' && '🌫️ Nebel (-30% Reichweite)'}
             {weather === 'windy' && '💨 Wind (+20% Speed)'}
           </div>
 
@@ -2439,7 +3583,8 @@ export default function GuineaPigTDRoguelike() {
         <div className="absolute bottom-4 left-0 right-0 px-3 pointer-events-auto">
           <div className="bg-black/85 rounded-2xl p-3">
             <div className="text-white text-xs text-center mb-2">
-              {buildMode ? '👆 Tippe zum Platzieren' : '🏗️ Bauen'}
+              {buildMode === 'wall' ? '🧱 Ziehen zum Mauern bauen' :
+               buildMode ? '👆 Klicken zum Platzieren | R = Drehen' : '🏗️ Bauen'}
             </div>
             <div className="grid grid-cols-5 gap-2">
               {[
@@ -2472,12 +3617,20 @@ export default function GuineaPigTDRoguelike() {
               ))}
             </div>
             {buildMode && (
-              <button
-                className="mt-2 w-full bg-red-600 text-white py-2 rounded-xl text-sm"
-                onClick={() => window.gameCancelBuild && window.gameCancelBuild()}
-              >
-                ✕ Abbrechen
-              </button>
+              <div className="mt-2 flex gap-2">
+                <button
+                  className="flex-1 bg-blue-600 text-white py-2 rounded-xl text-sm flex items-center justify-center gap-1"
+                  onClick={() => window.gameRotateBuilding && window.gameRotateBuilding()}
+                >
+                  🔄 Drehen ({buildRotation}°)
+                </button>
+                <button
+                  className="flex-1 bg-red-600 text-white py-2 rounded-xl text-sm"
+                  onClick={() => window.gameCancelBuild && window.gameCancelBuild()}
+                >
+                  ✕ Abbrechen
+                </button>
+              </div>
             )}
           </div>
         </div>

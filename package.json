@@ -6,6 +6,7 @@
   "description": "Guinea Bros - A 3D Tower Defense Roguelike game built with React and Three.js",
   "scripts": {
     "dev": "vite",
+    "dev:config": "vite --open /configurator.html",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0"

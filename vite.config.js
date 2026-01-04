@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { resolve } from 'path'
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -13,6 +14,10 @@ export default defineConfig({
     sourcemap: false,
     minify: 'esbuild',
     rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        configurator: resolve(__dirname, 'configurator.html')
+      },
       output: {
         manualChunks: {
           'three': ['three'],
