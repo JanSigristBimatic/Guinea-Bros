@@ -7,7 +7,6 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 // Vignette Shader
@@ -121,14 +120,7 @@ export function createPostProcessing(renderer, scene, camera) {
   vignettePass.uniforms.offset.value = 1.2;
   composer.addPass(vignettePass);
 
-  // 5. FXAA Anti-aliasing
-  const fxaaPass = new ShaderPass(FXAAShader);
-  const pixelRatio = renderer.getPixelRatio();
-  fxaaPass.material.uniforms['resolution'].value.x = 1 / (window.innerWidth * pixelRatio);
-  fxaaPass.material.uniforms['resolution'].value.y = 1 / (window.innerHeight * pixelRatio);
-  composer.addPass(fxaaPass);
-
-  // 6. Output Pass (final output with color space)
+  // 5. Output Pass (final output with color space)
   const outputPass = new OutputPass();
   composer.addPass(outputPass);
 
@@ -137,12 +129,8 @@ export function createPostProcessing(renderer, scene, camera) {
     bloomPass,
     vignettePass,
     colorGradingPass,
-    fxaaPass,
     resize: (width, height) => {
       composer.setSize(width, height);
-      const pr = renderer.getPixelRatio();
-      fxaaPass.material.uniforms['resolution'].value.x = 1 / (width * pr);
-      fxaaPass.material.uniforms['resolution'].value.y = 1 / (height * pr);
     },
     // Adjust for day/night
     setDayMode: () => {
@@ -358,27 +346,26 @@ export function createClouds(scene) {
   const clouds = [];
   const cloudGroup = new THREE.Group();
 
-  for (let i = 0; i < 15; i++) {
+  // Reduced cloud count for better performance
+  for (let i = 0; i < 8; i++) {
     const cloud = new THREE.Group();
 
-    // Each cloud is made of multiple spheres
-    const numPuffs = 3 + Math.floor(Math.random() * 4);
+    // Each cloud is made of fewer spheres with lower poly
+    const numPuffs = 2 + Math.floor(Math.random() * 2);
     for (let j = 0; j < numPuffs; j++) {
       const puffGeo = new THREE.SphereGeometry(
-        2 + Math.random() * 3,
-        8,
-        8
+        3 + Math.random() * 3,
+        6,  // reduced segments
+        6
       );
-      const puffMat = new THREE.MeshStandardMaterial({
+      const puffMat = new THREE.MeshBasicMaterial({  // BasicMaterial = no lighting calc
         color: 0xffffff,
-        roughness: 1,
-        metalness: 0,
         transparent: true,
-        opacity: 0.85
+        opacity: 0.8
       });
       const puff = new THREE.Mesh(puffGeo, puffMat);
       puff.position.set(
-        j * 2.5 - numPuffs,
+        j * 3 - numPuffs,
         Math.random() * 1.5,
         Math.random() * 2 - 1
       );
@@ -386,11 +373,11 @@ export function createClouds(scene) {
     }
 
     cloud.position.set(
-      (Math.random() - 0.5) * 200,
-      40 + Math.random() * 20,
-      (Math.random() - 0.5) * 200
+      (Math.random() - 0.5) * 180,
+      45 + Math.random() * 15,
+      (Math.random() - 0.5) * 180
     );
-    cloud.userData.speed = 0.01 + Math.random() * 0.02;
+    cloud.userData.speed = 0.008 + Math.random() * 0.012;
     cloud.userData.baseX = cloud.position.x;
 
     cloudGroup.add(cloud);
@@ -459,7 +446,7 @@ export function createLightShafts(scene) {
  * Create Dust Particles in the air
  */
 export function createDustParticles(scene) {
-  const particleCount = 200;
+  const particleCount = 80; // Reduced for performance
   const geometry = new THREE.BufferGeometry();
   const positions = new Float32Array(particleCount * 3);
   const velocities = [];

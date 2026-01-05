@@ -2,12 +2,9 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
-  createPostProcessing,
-  createSkyDome,
   createEnhancedGround,
   createEnhancedLighting,
   createClouds,
-  createLightShafts,
   createDustParticles
 } from './src/utils/graphics.js';
 
@@ -216,8 +213,9 @@ export default function GuineaPigTDRoguelike() {
     containerRef.current.appendChild(renderer.domElement);
 
     // ============== ENHANCED GRAPHICS ==============
-    // Sky Dome with gradient
-    const skyDome = createSkyDome(scene);
+    // Sky background (simple gradient via fog)
+    scene.background = new THREE.Color(0x87CEEB);
+    scene.fog = new THREE.Fog(0x87CEEB, 60, 150);
 
     // Enhanced Lighting (5 light sources)
     const lights = createEnhancedLighting(scene);
@@ -225,17 +223,8 @@ export default function GuineaPigTDRoguelike() {
     // Clouds
     const clouds = createClouds(scene);
 
-    // Light Shafts (God Rays)
-    const lightShafts = createLightShafts(scene);
-
     // Dust Particles
     const dustParticles = createDustParticles(scene);
-
-    // Post-Processing Pipeline
-    const postProcessing = createPostProcessing(renderer, scene, camera);
-
-    // Store graphics refs for updates
-    const graphicsRefs = { skyDome, clouds, lightShafts, dustParticles, postProcessing };
 
     // ============== GROUND ==============
     const ground = createEnhancedGround(scene);
@@ -663,24 +652,33 @@ export default function GuineaPigTDRoguelike() {
       const onAllLoaded = () => {
         if (!parts.tank || !parts.turret || !parts.healer) return;
 
-        // 1. Tank auf Boden positionieren
+        // 1. Tank auf Boden positionieren (mit Rotation)
         const tankInfo = positionModelOnGround(parts.tank, 1.0, { rotationY: Math.PI });
         sizes.tank = tankInfo.size;
+        // Nach positionModelOnGround: Tank-Boden bei Y=0, Tank-Top bei Y=size.y
+        const tankTopY = sizes.tank.y;
 
-        // 2. Turret auf Tank stapeln (Tank-Höhe als Basis)
+        // 2. Turret auf Tank stapeln
         parts.turret.scale.setScalar(1.0);
         parts.turret.updateMatrixWorld(true);
         const turretBox = new THREE.Box3().setFromObject(parts.turret);
         sizes.turret = turretBox.getSize(new THREE.Vector3());
-        parts.turret.position.y = sizes.tank.y; // Auf Tank-Oberseite
+        // Turret-Boden soll auf Tank-Top liegen
+        const turretGroundOffset = -turretBox.min.y;
+        parts.turret.position.y = tankTopY + turretGroundOffset;
+        // Turret-Top = position.y + (max.y - min.y) = position.y + size.y... aber wir brauchen world max
+        // Nach Verschiebung: Turret world max = turret.position.y + turretBox.max.y
+        const turretTopY = parts.turret.position.y + turretBox.max.y;
 
-        // 3. Healer auf Turret stapeln
+        // 3. Healer IM Turret (sitzt drin, nicht oben drauf)
         parts.healer.scale.setScalar(0.7);
         parts.healer.updateMatrixWorld(true);
         const healerBox = new THREE.Box3().setFromObject(parts.healer);
         sizes.healer = healerBox.getSize(new THREE.Vector3());
-        const healerGroundOffset = -healerBox.min.y / 0.7 * 0.7; // Offset bei scale 0.7
-        parts.healer.position.y = sizes.tank.y + sizes.turret.y * 0.7 + healerGroundOffset;
+        const healerGroundOffset = -healerBox.min.y;
+        // Healer sitzt in der Turret-Mitte, nicht auf der Turret-Spitze
+        const turretCenterY = parts.turret.position.y + (turretBox.min.y + turretBox.max.y) / 2;
+        parts.healer.position.y = turretCenterY + healerGroundOffset;
 
         // Placeholder entfernen
         if (group.userData.placeholder) {
@@ -688,7 +686,7 @@ export default function GuineaPigTDRoguelike() {
           group.userData.placeholder = null;
         }
         group.userData.modelLoaded = true;
-        console.log('Healer Tank fully loaded - stacked heights:', sizes);
+        console.log('Healer Tank stacked - tankTop:', tankTopY.toFixed(2), 'turretCenter:', turretCenterY.toFixed(2), 'healerY:', parts.healer.position.y.toFixed(2));
       };
 
       const setupMesh = (model) => {
@@ -2529,11 +2527,10 @@ healerEditor.config            - Aktuelle Werte zeigen
       hideWallPreviewGhosts();
 
       // Night mode graphics
-      skyDome.setNightMode();
+      scene.background = new THREE.Color(0x1a1a3a);
+      scene.fog.color.setHex(0x1a1a3a);
       lights.setNightMode();
-      postProcessing.setNightMode();
       clouds.setVisible(false);
-      lightShafts.setVisible(false);
 
       partners.forEach(p => p.visible = false);
       changeWeather();
@@ -2552,11 +2549,10 @@ healerEditor.config            - Aktuelle Werte zeigen
       setDayTimeLeft(gameState.dayDuration);
 
       // Day mode graphics
-      skyDome.setDayMode();
+      scene.background = new THREE.Color(0x87CEEB);
+      scene.fog.color.setHex(0x87CEEB);
       lights.setDayMode();
-      postProcessing.setDayMode();
       clouds.setVisible(true);
-      lightShafts.setVisible(true);
 
       partners.forEach(p => p.visible = true);
 
@@ -2600,13 +2596,12 @@ healerEditor.config            - Aktuelle Werte zeigen
       time += dt;
 
       if (gameOver || victory) {
-        postProcessing.composer.render();
+        renderer.render(scene, camera);
         return;
       }
 
       // Update enhanced graphics
       clouds.update(time);
-      lightShafts.update(time);
       dustParticles.update();
 
       // Weather effects
@@ -3514,8 +3509,7 @@ healerEditor.config            - Aktuelle Werte zeigen
       camera.position.z += (camTarget.z + baseZ - camera.position.z) * 0.03;
       camera.lookAt(camTarget.x * 0.5, 0, camTarget.z * 0.5);
 
-      // Render with post-processing
-      postProcessing.composer.render();
+      renderer.render(scene, camera);
     }
 
     animate();
@@ -3527,7 +3521,6 @@ healerEditor.config            - Aktuelle Werte zeigen
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height);
-      postProcessing.resize(width, height);
     };
     window.addEventListener('resize', handleResize);
 
