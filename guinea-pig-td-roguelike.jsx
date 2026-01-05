@@ -1,6 +1,51 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import {
+  createPostProcessing,
+  createSkyDome,
+  createEnhancedGround,
+  createEnhancedLighting,
+  createClouds,
+  createLightShafts,
+  createDustParticles
+} from './src/utils/graphics.js';
+
+// ============== GLB MODEL POSITIONING HELPER ==============
+/**
+ * Positioniert ein GLB-Modell korrekt auf dem Boden (Y=0)
+ * Berechnet automatisch den Ground Offset aus der BoundingBox
+ *
+ * @param {THREE.Object3D} model - Das geladene gltf.scene
+ * @param {number} scale - Skalierungsfaktor
+ * @param {object} options - Optionen
+ * @param {number} options.rotationY - Y-Rotation in Rad (default: 0)
+ * @param {number} options.offsetY - Zusätzlicher Y-Offset (default: 0)
+ * @returns {object} - { groundOffset, size }
+ */
+function positionModelOnGround(model, scale = 1, options = {}) {
+  const { rotationY = 0, offsetY = 0 } = options;
+
+  // Skalierung anwenden
+  model.scale.setScalar(scale);
+
+  // Rotation anwenden (BEVOR BoundingBox berechnet wird)
+  model.rotation.y = rotationY;
+
+  // BoundingBox nach Skalierung + Rotation berechnen
+  model.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(model);
+
+  // Ground Offset = wie viel Y nötig ist damit min.y = 0
+  const groundOffset = -box.min.y + offsetY;
+  model.position.y = groundOffset;
+
+  return {
+    groundOffset,
+    size: box.getSize(new THREE.Vector3()),
+    boundingBox: box
+  };
+}
 
 // ============== PERSISTENT SKILL TREE DATA ==============
 const DEFAULT_SKILLS = {
@@ -50,6 +95,18 @@ function loadMeta() {
   } catch (e) {}
   return { totalGames: 0, bestWave: 0, totalCarrots: 0, skillPoints: 0, bossesKilled: 0 };
 }
+
+// ============== WAVE CONFIGURATION ==============
+const WAVES_CONFIG = [
+  { foxes: 5, ravens: 0, snakes: 0, delay: 1.8 },
+  { foxes: 7, ravens: 3, snakes: 0, delay: 1.5 },
+  { foxes: 8, ravens: 5, snakes: 2, delay: 1.3, boss: 'fox' },
+  { foxes: 12, ravens: 7, snakes: 4, delay: 1.1 },
+  { foxes: 15, ravens: 10, snakes: 5, delay: 0.9 },
+  { foxes: 18, ravens: 12, snakes: 8, delay: 0.8, boss: 'raven' },
+  { foxes: 22, ravens: 15, snakes: 10, delay: 0.7 },
+  { foxes: 30, ravens: 20, snakes: 15, delay: 0.5, boss: 'both' },
+];
 
 export default function GuineaPigTDRoguelike() {
   const containerRef = useRef(null);
@@ -137,9 +194,9 @@ export default function GuineaPigTDRoguelike() {
 
     // ============== SCENE SETUP ==============
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87CEEB);
+    scene.background = null; // Using sky dome instead
 
-    const camera = new THREE.PerspectiveCamera(50, containerRef.current.clientWidth / containerRef.current.clientHeight, 0.1, 200);
+    const camera = new THREE.PerspectiveCamera(50, containerRef.current.clientWidth / containerRef.current.clientHeight, 0.1, 250);
     camera.position.set(0, 28, 35);
     camera.lookAt(0, 0, 0);
 
@@ -155,39 +212,33 @@ export default function GuineaPigTDRoguelike() {
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.3;
+    renderer.toneMappingExposure = 1.2;
     containerRef.current.appendChild(renderer.domElement);
 
-    // Lighting
-    const sunLight = new THREE.DirectionalLight(0xFFFAE6, 1.5);
-    sunLight.position.set(20, 30, 20);
-    sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = 2048;
-    sunLight.shadow.mapSize.height = 2048;
-    sunLight.shadow.camera.near = 0.5;
-    sunLight.shadow.camera.far = 120;
-    sunLight.shadow.camera.left = -50;
-    sunLight.shadow.camera.right = 50;
-    sunLight.shadow.camera.top = 50;
-    sunLight.shadow.camera.bottom = -50;
-    scene.add(sunLight);
+    // ============== ENHANCED GRAPHICS ==============
+    // Sky Dome with gradient
+    const skyDome = createSkyDome(scene);
 
-    const ambientLight = new THREE.AmbientLight(0x8EC8FF, 0.7);
-    scene.add(ambientLight);
+    // Enhanced Lighting (5 light sources)
+    const lights = createEnhancedLighting(scene);
 
-    const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x5C4033, 0.5);
-    scene.add(hemiLight);
+    // Clouds
+    const clouds = createClouds(scene);
 
-    const lights = { sun: sunLight, ambient: ambientLight, hemi: hemiLight };
+    // Light Shafts (God Rays)
+    const lightShafts = createLightShafts(scene);
+
+    // Dust Particles
+    const dustParticles = createDustParticles(scene);
+
+    // Post-Processing Pipeline
+    const postProcessing = createPostProcessing(renderer, scene, camera);
+
+    // Store graphics refs for updates
+    const graphicsRefs = { skyDome, clouds, lightShafts, dustParticles, postProcessing };
 
     // ============== GROUND ==============
-    const groundGeometry = new THREE.PlaneGeometry(120, 120);
-    const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x4CAF50, roughness: 0.9 });
-    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    ground.name = 'ground';
-    scene.add(ground);
+    const ground = createEnhancedGround(scene);
 
     // Grid for building (subtle)
     const gridHelper = new THREE.GridHelper(40, 20, 0x3d8b40, 0x3d8b40);
@@ -353,8 +404,8 @@ export default function GuineaPigTDRoguelike() {
           (gltf) => {
             const model = gltf.scene;
             const scale = buildingScales[type] || 1;
-            model.scale.set(scale, scale, scale);
-            model.position.y = 0.8; // Anheben über den Boden
+            // Automatische Boden-Positionierung
+            positionModelOnGround(model, scale);
             model.traverse((child) => {
               if (child.isMesh) {
                 child.castShadow = true;
@@ -443,8 +494,8 @@ export default function GuineaPigTDRoguelike() {
           '/glb/Sammler.glb',
           (gltf) => {
             const model = gltf.scene;
-            model.scale.set(2.25, 2.25, 2.25);
-            model.rotation.y = Math.PI / 2; // 90 Grad nach rechts drehen
+            // Automatische Boden-Positionierung mit Rotation
+            positionModelOnGround(model, 2.25, { rotationY: Math.PI / 2 });
             model.traverse((child) => {
               if (child.isMesh) {
                 child.castShadow = true;
@@ -600,34 +651,61 @@ export default function GuineaPigTDRoguelike() {
     }
 
     // ============== HEALER TANK (GLB MODEL) ==============
+    // Mehrteiliges Modell: Tank (Basis) + Turret + Healer gestapelt
     function loadHealerModels(group, scale) {
       const gltfLoader = new GLTFLoader();
+      const parts = { tank: null, turret: null, healer: null };
+      const sizes = { tank: null, turret: null, healer: null };
       let loadedCount = 0;
       const totalModels = 3;
 
+      // Nach Laden aller Teile: korrekt stapeln
       const onAllLoaded = () => {
+        if (!parts.tank || !parts.turret || !parts.healer) return;
+
+        // 1. Tank auf Boden positionieren
+        const tankInfo = positionModelOnGround(parts.tank, 1.0, { rotationY: Math.PI });
+        sizes.tank = tankInfo.size;
+
+        // 2. Turret auf Tank stapeln (Tank-Höhe als Basis)
+        parts.turret.scale.setScalar(1.0);
+        parts.turret.updateMatrixWorld(true);
+        const turretBox = new THREE.Box3().setFromObject(parts.turret);
+        sizes.turret = turretBox.getSize(new THREE.Vector3());
+        parts.turret.position.y = sizes.tank.y; // Auf Tank-Oberseite
+
+        // 3. Healer auf Turret stapeln
+        parts.healer.scale.setScalar(0.7);
+        parts.healer.updateMatrixWorld(true);
+        const healerBox = new THREE.Box3().setFromObject(parts.healer);
+        sizes.healer = healerBox.getSize(new THREE.Vector3());
+        const healerGroundOffset = -healerBox.min.y / 0.7 * 0.7; // Offset bei scale 0.7
+        parts.healer.position.y = sizes.tank.y + sizes.turret.y * 0.7 + healerGroundOffset;
+
+        // Placeholder entfernen
         if (group.userData.placeholder) {
           group.remove(group.userData.placeholder);
           group.userData.placeholder = null;
         }
         group.userData.modelLoaded = true;
-        console.log('Healer Tank fully loaded');
+        console.log('Healer Tank fully loaded - stacked heights:', sizes);
+      };
+
+      const setupMesh = (model) => {
+        model.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = false;
+          }
+        });
       };
 
       // 1. Tank (Basis)
       gltfLoader.load('/glb/Healer/Tank.glb', (gltf) => {
-        const tank = gltf.scene;
-        tank.name = 'TankBase';
-        tank.scale.setScalar(1.0);
-        tank.position.set(0, 0.3, 0); // Angehoben
-        tank.rotation.y = Math.PI; // Tank umdrehen
-        tank.traverse((child) => {
-          if (child.isMesh) {
-            child.castShadow = true;
-            child.receiveShadow = false; // Heroes don't receive shadows for better visibility
-          }
-        });
-        group.add(tank);
+        parts.tank = gltf.scene;
+        parts.tank.name = 'TankBase';
+        setupMesh(parts.tank);
+        group.add(parts.tank);
         loadedCount++;
         if (loadedCount === totalModels) onAllLoaded();
       }, undefined, (error) => {
@@ -638,18 +716,11 @@ export default function GuineaPigTDRoguelike() {
 
       // 2. Turret (rotierbar)
       gltfLoader.load('/glb/Healer/Turet.glb', (gltf) => {
-        const turret = gltf.scene;
-        turret.name = 'Turret';
-        turret.scale.setScalar(1.0);
-        turret.position.set(0, 0.7, 0); // Höher
-        turret.traverse((child) => {
-          if (child.isMesh) {
-            child.castShadow = true;
-            child.receiveShadow = false; // Heroes don't receive shadows for better visibility
-          }
-        });
-        group.add(turret);
-        group.userData.turret = turret;
+        parts.turret = gltf.scene;
+        parts.turret.name = 'Turret';
+        setupMesh(parts.turret);
+        group.add(parts.turret);
+        group.userData.turret = parts.turret;
         loadedCount++;
         if (loadedCount === totalModels) onAllLoaded();
       }, undefined, (error) => {
@@ -660,18 +731,11 @@ export default function GuineaPigTDRoguelike() {
 
       // 3. Healer Charakter
       gltfLoader.load('/glb/Healer/Healer.glb', (gltf) => {
-        const healer = gltf.scene;
-        healer.name = 'HealerCharacter';
-        healer.scale.setScalar(0.7); // Kleiner
-        healer.position.set(0, 1.1, 0); // Höher
-        healer.traverse((child) => {
-          if (child.isMesh) {
-            child.castShadow = true;
-            child.receiveShadow = false; // Heroes don't receive shadows for better visibility
-          }
-        });
-        group.add(healer);
-        group.userData.healerBody = healer;
+        parts.healer = gltf.scene;
+        parts.healer.name = 'HealerCharacter';
+        setupMesh(parts.healer);
+        group.add(parts.healer);
+        group.userData.healerBody = parts.healer;
         loadedCount++;
         if (loadedCount === totalModels) onAllLoaded();
       }, undefined, (error) => {
@@ -1072,13 +1136,12 @@ healerEditor.config            - Aktuelle Werte zeigen
       bomberLoader.load('/glb/Bomber/Bomber.glb', (gltf) => {
         const bomberModel = gltf.scene;
         bomberModel.name = 'BomberBody';
-        bomberModel.scale.setScalar(scale * 0.8);
-        bomberModel.position.y = 0.8; // Angehoben damit nicht im Boden
-        bomberModel.rotation.y = Math.PI / 2; // 90 Grad drehen damit er geradeaus schaut
+        // Automatische Boden-Positionierung mit Rotation
+        const bomberInfo = positionModelOnGround(bomberModel, scale * 0.8, { rotationY: Math.PI / 2 });
         bomberModel.traverse((child) => {
           if (child.isMesh) {
             child.castShadow = true;
-            child.receiveShadow = false; // Heroes don't receive shadows for better visibility
+            child.receiveShadow = false;
             if (child.material && child.material.map) {
               child.material.map.colorSpace = THREE.SRGBColorSpace;
               child.material.map.needsUpdate = true;
@@ -1093,9 +1156,10 @@ healerEditor.config            - Aktuelle Werte zeigen
           const bombModel = bombGltf.scene;
           bombModel.name = 'BombInHand';
           bombModel.scale.setScalar(scale * 0.4);
-          // Bombe vor dem Körper auf Bauchhöhe: x=0 (mittig), y=Bauchhöhe, z=vorne
-          bombModel.position.set(0, 1.0 * scale, 0.6 * scale);
-          bombModel.rotation.y = Math.PI / 2; // Gleiche Drehung wie Bomber
+          // Bombe relativ zum Bomber: Bauchhöhe = halbe Körperhöhe
+          const bodyHeight = bomberInfo.size.y;
+          bombModel.position.set(0, bodyHeight * 0.5, 0.6 * scale);
+          bombModel.rotation.y = Math.PI / 2;
           bombModel.traverse((child) => {
             if (child.isMesh) {
               child.castShadow = true;
@@ -1297,8 +1361,8 @@ healerEditor.config            - Aktuelle Werte zeigen
       // Use GLB model if loaded, otherwise use fallback geometry
       if (cachedCarrotModel) {
         const carrotModel = cachedCarrotModel.clone();
-        carrotModel.scale.setScalar(0.4);
-        carrotModel.position.y = 0.1;
+        // Automatische Boden-Positionierung
+        positionModelOnGround(carrotModel, 0.4);
 
         // Apply color tint for special carrot types
         if (type !== 'normal') {
@@ -1473,16 +1537,16 @@ healerEditor.config            - Aktuelle Werte zeigen
       const particles = [];
       for (let i = 0; i < value; i++) {
         const geo = new THREE.SphereGeometry(0.08, 6, 6);
-        const mat = new THREE.MeshBasicMaterial({ 
-          color: new THREE.Color().setHSL(0.1, 1, 0.5 + value * 0.05), 
-          transparent: true 
+        const mat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color().setHSL(0.1, 1, 0.5 + value * 0.05),
+          transparent: true
         });
         const p = new THREE.Mesh(geo, mat);
         p.position.copy(position);
         p.userData = {
           velocity: new THREE.Vector3(
-            (Math.random() - 0.5) * 0.2, 
-            0.15 + Math.random() * 0.1, 
+            (Math.random() - 0.5) * 0.2,
+            0.15 + Math.random() * 0.1,
             (Math.random() - 0.5) * 0.2
           ),
           life: 1,
@@ -1491,6 +1555,52 @@ healerEditor.config            - Aktuelle Werte zeigen
         particles.push(p);
       }
       return particles;
+    }
+
+    // Create floating damage number using canvas sprite
+    function createDamageNumber(position, damage, isCrit = false, isHeal = false) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+
+      // Text styling
+      ctx.font = isCrit ? 'bold 48px Arial' : 'bold 36px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      // Color based on type
+      let color = '#FF4444'; // Red for damage
+      if (isHeal) color = '#44FF44'; // Green for heals
+      if (isCrit) color = '#FFD700'; // Gold for crits
+
+      // Draw text with outline
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 4;
+      const text = isHeal ? `+${damage}` : `-${damage}`;
+      ctx.strokeText(text, 64, 32);
+      ctx.fillStyle = color;
+      ctx.fillText(text, 64, 32);
+
+      // Create sprite
+      const texture = new THREE.CanvasTexture(canvas);
+      const spriteMat = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthTest: false
+      });
+      const sprite = new THREE.Sprite(spriteMat);
+      sprite.position.copy(position);
+      sprite.position.y += 1.5;
+      sprite.position.x += (Math.random() - 0.5) * 0.5;
+      sprite.scale.set(isCrit ? 2 : 1.5, isCrit ? 1 : 0.75, 1);
+      sprite.userData = {
+        velocity: new THREE.Vector3(0, 0.04, 0),
+        life: 1.2,
+        isDamageNumber: true
+      };
+      scene.add(sprite);
+      return [sprite];
     }
 
     // ============== GAME STATE ==============
@@ -1560,11 +1670,8 @@ healerEditor.config            - Aktuelle Werte zeigen
       '/glb/Maincharacter/Maincharacter.glb',
       (gltf) => {
         const model = gltf.scene;
-        // Scale and position the model appropriately
-        model.scale.setScalar(3.0);
-        model.position.y = 0.8; // Lift model above ground
-        // Rotate to face forward (adjust as needed)
-        model.rotation.y = Math.PI / 2;
+        // Automatische Boden-Positionierung mit Rotation
+        positionModelOnGround(model, 3.0, { rotationY: Math.PI / 2 });
         // Enable shadows and fix textures for all meshes
         model.traverse((child) => {
           if (child.isMesh) {
@@ -1655,6 +1762,33 @@ healerEditor.config            - Aktuelle Werte zeigen
     placementRing.visible = false;
     scene.add(placementRing);
 
+    // Tower range indicator - shows attack range when placing towers
+    const towerRangeMat = new THREE.MeshBasicMaterial({
+      color: 0x4da6ff,
+      transparent: true,
+      opacity: 0.15,
+      side: THREE.DoubleSide
+    });
+    const towerRangeBorderMat = new THREE.MeshBasicMaterial({
+      color: 0x4da6ff,
+      transparent: true,
+      opacity: 0.4
+    });
+    // Create filled circle for range area
+    const towerRangeGeo = new THREE.CircleGeometry(12, 64);
+    const towerRangeIndicator = new THREE.Mesh(towerRangeGeo, towerRangeMat);
+    towerRangeIndicator.rotation.x = -Math.PI / 2;
+    towerRangeIndicator.position.y = 0.02;
+    towerRangeIndicator.visible = false;
+    scene.add(towerRangeIndicator);
+    // Create ring border for better visibility
+    const towerRangeBorderGeo = new THREE.RingGeometry(11.8, 12, 64);
+    const towerRangeBorder = new THREE.Mesh(towerRangeBorderGeo, towerRangeBorderMat);
+    towerRangeBorder.rotation.x = -Math.PI / 2;
+    towerRangeBorder.position.y = 0.03;
+    towerRangeBorder.visible = false;
+    scene.add(towerRangeBorder);
+
     // Wall drag preview line
     function createWallPreviewLine() {
       const points = [new THREE.Vector3(0, 0.5, 0), new THREE.Vector3(0, 0.5, 0)];
@@ -1701,6 +1835,28 @@ healerEditor.config            - Aktuelle Werte zeigen
       placementRing.visible = true;
       placementRing.material = isValid ? validPlacementMat : invalidPlacementMat;
 
+      // Update tower range indicator (only for towers)
+      if (currentPreviewType === 'tower') {
+        const towerRange = 12 * (1 + getSkillEffect('towerRange') / 100);
+        // Update geometry if range changed
+        if (towerRangeIndicator.geometry.parameters.radius !== towerRange) {
+          towerRangeIndicator.geometry.dispose();
+          towerRangeIndicator.geometry = new THREE.CircleGeometry(towerRange, 64);
+          towerRangeBorder.geometry.dispose();
+          towerRangeBorder.geometry = new THREE.RingGeometry(towerRange - 0.2, towerRange, 64);
+        }
+        towerRangeIndicator.position.set(x, 0.02, z);
+        towerRangeBorder.position.set(x, 0.03, z);
+        towerRangeIndicator.visible = true;
+        towerRangeBorder.visible = true;
+        // Color based on validity
+        towerRangeMat.color.setHex(isValid ? 0x4da6ff : 0xff6666);
+        towerRangeBorderMat.color.setHex(isValid ? 0x4da6ff : 0xff6666);
+      } else {
+        towerRangeIndicator.visible = false;
+        towerRangeBorder.visible = false;
+      }
+
       // Update ghost color based on validity
       previewGhost.traverse((child) => {
         if (child.isMesh && child.material.opacity !== undefined) {
@@ -1719,6 +1875,8 @@ healerEditor.config            - Aktuelle Werte zeigen
     function hidePreview() {
       if (previewGhost) previewGhost.visible = false;
       placementRing.visible = false;
+      towerRangeIndicator.visible = false;
+      towerRangeBorder.visible = false;
     }
 
     function checkPlacementValid(x, z, collisionRadius = 2.5) {
@@ -1736,17 +1894,8 @@ healerEditor.config            - Aktuelle Werte zeigen
     // Initial carrots
     for (let i = 0; i < 30; i++) spawnCarrot();
 
-    // ============== WAVES ==============
-    const WAVES = [
-      { foxes: 5, ravens: 0, snakes: 0, delay: 1.8 },
-      { foxes: 7, ravens: 3, snakes: 0, delay: 1.5 },
-      { foxes: 8, ravens: 5, snakes: 2, delay: 1.3, boss: 'fox' }, // Boss wave
-      { foxes: 12, ravens: 7, snakes: 4, delay: 1.1 },
-      { foxes: 15, ravens: 10, snakes: 5, delay: 0.9 },
-      { foxes: 18, ravens: 12, snakes: 8, delay: 0.8, boss: 'raven' }, // Boss wave
-      { foxes: 22, ravens: 15, snakes: 10, delay: 0.7 },
-      { foxes: 30, ravens: 20, snakes: 15, delay: 0.5, boss: 'both' }, // Final boss
-    ];
+    // Use global WAVES_CONFIG
+    const WAVES = WAVES_CONFIG;
 
     let enemiesToSpawn = [];
     let spawnTimer = 0;
@@ -2379,10 +2528,12 @@ healerEditor.config            - Aktuelle Werte zeigen
       wallDragStartPos = null;
       hideWallPreviewGhosts();
 
-      scene.background = new THREE.Color(0x1a1a3a);
-      lights.sun.intensity = 0.25;
-      lights.sun.color.setHex(0x6666AA);
-      lights.ambient.intensity = 0.15;
+      // Night mode graphics
+      skyDome.setNightMode();
+      lights.setNightMode();
+      postProcessing.setNightMode();
+      clouds.setVisible(false);
+      lightShafts.setVisible(false);
 
       partners.forEach(p => p.visible = false);
       changeWeather();
@@ -2399,23 +2550,25 @@ healerEditor.config            - Aktuelle Werte zeigen
       setWave(gameState.wave);
       setPhase('day');
       setDayTimeLeft(gameState.dayDuration);
-      
-      scene.background = new THREE.Color(0x87CEEB);
-      lights.sun.intensity = 1.5;
-      lights.sun.color.setHex(0xFFFAE6);
-      lights.ambient.intensity = 0.5;
-      
+
+      // Day mode graphics
+      skyDome.setDayMode();
+      lights.setDayMode();
+      postProcessing.setDayMode();
+      clouds.setVisible(true);
+      lightShafts.setVisible(true);
+
       partners.forEach(p => p.visible = true);
-      
+
       // Regenerate if fortress skill
       if (getSkillEffect('fortress')) {
         gameState.baseHealth = Math.min(gameState.maxBaseHealth, gameState.baseHealth + 10);
         setBaseHealth(gameState.baseHealth);
       }
-      
+
       // Spawn more carrots
       for (let i = 0; i < 12; i++) spawnCarrot();
-      
+
       if (gameState.wave >= WAVES.length) {
         setVictory(true);
         // Award skill points
@@ -2447,9 +2600,14 @@ healerEditor.config            - Aktuelle Werte zeigen
       time += dt;
 
       if (gameOver || victory) {
-        renderer.render(scene, camera);
+        postProcessing.composer.render();
         return;
       }
+
+      // Update enhanced graphics
+      clouds.update(time);
+      lightShafts.update(time);
+      dustParticles.update();
 
       // Weather effects
       if (gameState.weather === 'rainy') {
@@ -2981,10 +3139,12 @@ healerEditor.config            - Aktuelle Werte zeigen
               data.attackCooldown = data.type === 'bomber' ? 2.5 : (data.type === 'assassin' ? 0.8 : 1.2);
 
               let damage = data.attackDamage * rageBonus;
-              if (Math.random() < critChance) {
+              const wasCrit = Math.random() < critChance;
+              if (wasCrit) {
                 damage *= 2;
                 effects.push(...createExplosion(nearestEnemy.position, 0xFFFF00));
               }
+              damage = Math.round(damage);
 
               if (data.type === 'bomber') {
                 // Bomber wirft Bombe auf Feinde
@@ -3009,6 +3169,7 @@ healerEditor.config            - Aktuelle Werte zeigen
                 effects.push(...createExplosion(defender.position, 0xFF6B35));
               } else {
                 nearestEnemy.userData.health -= damage;
+                effects.push(...createDamageNumber(nearestEnemy.position, damage, wasCrit));
               }
             }
 
@@ -3182,11 +3343,13 @@ healerEditor.config            - Aktuelle Werte zeigen
                   const ddz = proj.position.z - e.position.z;
                   if (Math.sqrt(ddx*ddx + ddz*ddz) < proj.userData.splashRadius) {
                     e.userData.health -= proj.userData.damage;
+                    effects.push(...createDamageNumber(e.position, Math.round(proj.userData.damage)));
                   }
                 });
                 effects.push(...createExplosion(proj.position));
               } else {
                 enemy.userData.health -= proj.userData.damage;
+                effects.push(...createDamageNumber(enemy.position, Math.round(proj.userData.damage)));
               }
             }
           });
@@ -3236,6 +3399,7 @@ healerEditor.config            - Aktuelle Werte zeigen
                   const damageFactor = 1 - (dist / data.splashRadius);
                   const damage = Math.floor(data.damage * damageFactor);
                   enemy.userData.health -= damage;
+                  if (damage > 0) effects.push(...createDamageNumber(enemy.position, damage));
                 }
               });
             }
@@ -3255,13 +3419,32 @@ healerEditor.config            - Aktuelle Werte zeigen
         // Remove dead enemies
         for (let i = enemies.length - 1; i >= 0; i--) {
           if (enemies[i].userData.health <= 0) {
-            const wasBoss = enemies[i].userData.isBoss;
-            effects.push(...createExplosion(enemies[i].position, wasBoss ? 0xFFD700 : 0xFF6B35));
-            scene.remove(enemies[i]);
+            const enemy = enemies[i];
+            const wasBoss = enemy.userData.isBoss;
+            const killPosition = enemy.position.clone();
+
+            effects.push(...createExplosion(killPosition, wasBoss ? 0xFFD700 : 0xFF6B35));
+
+            // Kill combo system
+            gameState.combo++;
+            gameState.comboTimer = 2;
+            setCombo(gameState.combo);
+            setComboTimer(2);
+
+            const comboMultiplier = 1 + Math.min(gameState.combo, 10) * 0.1;
+            const baseReward = wasBoss ? 50 : 5;
+            const reward = Math.floor(baseReward * comboMultiplier);
+
+            scene.remove(enemy);
             enemies.splice(i, 1);
-            gameState.score += wasBoss ? 50 : 5;
+            gameState.score += reward;
             setScore(gameState.score);
-            
+
+            // Combo visual at kill location
+            if (gameState.combo >= 3) {
+              effects.push(...createComboText(killPosition, gameState.combo));
+            }
+
             if (wasBoss) {
               setMeta(prev => ({ ...prev, bossesKilled: prev.bossesKilled + 1 }));
               setMessage('👑 BOSS BESIEGT!');
@@ -3331,16 +3514,20 @@ healerEditor.config            - Aktuelle Werte zeigen
       camera.position.z += (camTarget.z + baseZ - camera.position.z) * 0.03;
       camera.lookAt(camTarget.x * 0.5, 0, camTarget.z * 0.5);
 
-      renderer.render(scene, camera);
+      // Render with post-processing
+      postProcessing.composer.render();
     }
 
     animate();
 
     const handleResize = () => {
       if (!containerRef.current) return;
-      camera.aspect = containerRef.current.clientWidth / containerRef.current.clientHeight;
+      const width = containerRef.current.clientWidth;
+      const height = containerRef.current.clientHeight;
+      camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
+      renderer.setSize(width, height);
+      postProcessing.resize(width, height);
     };
     window.addEventListener('resize', handleResize);
 
@@ -3555,6 +3742,27 @@ healerEditor.config            - Aktuelle Werte zeigen
             {weather === 'windy' && '💨 Wind (+20% Speed)'}
           </div>
 
+          {/* Wave Preview - shows upcoming enemies */}
+          {phase === 'day' && wave < WAVES_CONFIG.length && (
+            <div className="bg-black/70 rounded-lg px-2 py-1 text-xs">
+              <div className="text-gray-400 mb-1">Nächste Welle:</div>
+              <div className="flex gap-2 text-white">
+                {WAVES_CONFIG[wave].foxes > 0 && (
+                  <span title="Füchse">🦊 {WAVES_CONFIG[wave].foxes}</span>
+                )}
+                {WAVES_CONFIG[wave].ravens > 0 && (
+                  <span title="Raben">🐦‍⬛ {WAVES_CONFIG[wave].ravens}</span>
+                )}
+                {WAVES_CONFIG[wave].snakes > 0 && (
+                  <span title="Schlangen">🐍 {WAVES_CONFIG[wave].snakes}</span>
+                )}
+                {WAVES_CONFIG[wave].boss && (
+                  <span className="text-yellow-400" title="Boss">👑</span>
+                )}
+              </div>
+            </div>
+          )}
+
           {combo > 2 && (
             <div className="bg-orange-500 rounded-lg px-3 py-1 animate-bounce">
               <span className="text-white font-bold">🔥 x{combo} COMBO!</span>
@@ -3588,32 +3796,45 @@ healerEditor.config            - Aktuelle Werte zeigen
             </div>
             <div className="grid grid-cols-5 gap-2">
               {[
-                { type: 'collectorHut', icon: '🧺', label: 'Sammler', cost: buildingCosts.collectorHut },
-                { type: 'heroHut', icon: '⚔️', label: 'Helden', cost: buildingCosts.heroHut },
-                { type: 'tower', icon: '🗼', label: 'Turm', cost: buildingCosts.tower },
-                { type: 'wall', icon: '🧱', label: 'Mauer', cost: buildingCosts.wall },
-                { type: 'breed', icon: '💕', label: 'Züchten', cost: 15 },
-              ].map(({ type, icon, label, cost }) => (
-                <button
-                  key={type}
-                  className={`rounded-xl p-2 flex flex-col items-center transition-all ${
-                    buildMode === type ? 'bg-green-600 ring-2 ring-white' :
-                    score >= cost ? 'bg-gray-700 active:bg-gray-600' : 'bg-gray-800 opacity-50'
-                  }`}
-                  disabled={score < cost}
-                  onClick={() => {
-                    if (type === 'breed') {
-                      window.gameBreed && window.gameBreed();
-                    } else if (buildMode === type) {
-                      window.gameCancelBuild && window.gameCancelBuild();
-                    } else {
-                      window.gameBuild && window.gameBuild(type);
-                    }
-                  }}
-                >
-                  <span className="text-xl">{icon}</span>
-                  <span className="text-white text-xs">{cost}🥕</span>
-                </button>
+                { type: 'collectorHut', icon: '🧺', label: 'Sammler', cost: buildingCosts.collectorHut,
+                  desc: 'Spawnt Sammler die Karotten einsammeln', stats: '200 HP | Max 3 Sammler' },
+                { type: 'heroHut', icon: '⚔️', label: 'Helden', cost: buildingCosts.heroHut,
+                  desc: 'Spawnt zufällige Helden zur Verteidigung', stats: `200 HP | Spawn: ${Math.max(10, 20 - getSkillEffect('heroSpawnRate'))}s` },
+                { type: 'tower', icon: '🗼', label: 'Turm', cost: buildingCosts.tower,
+                  desc: 'Automatischer Fernkampf-Turm', stats: `200 HP | ${Math.round(25 * (1 + getSkillEffect('towerDamage') / 100))} DMG | ${Math.round(12 * (1 + getSkillEffect('towerRange') / 100))}m` },
+                { type: 'wall', icon: '🧱', label: 'Mauer', cost: buildingCosts.wall,
+                  desc: 'Blockiert Feinde', stats: `${100 + getSkillEffect('wallHealth')} HP | Ziehen für Linie` },
+                { type: 'breed', icon: '💕', label: 'Züchten', cost: 15,
+                  desc: 'Neuen Guinea Pig züchten', stats: 'Zufälliger Held' },
+              ].map(({ type, icon, label, cost, desc, stats }) => (
+                <div key={type} className="relative group">
+                  <button
+                    className={`w-full rounded-xl p-2 flex flex-col items-center transition-all ${
+                      buildMode === type ? 'bg-green-600 ring-2 ring-white' :
+                      score >= cost ? 'bg-gray-700 active:bg-gray-600' : 'bg-gray-800 opacity-50'
+                    }`}
+                    disabled={score < cost}
+                    onClick={() => {
+                      if (type === 'breed') {
+                        window.gameBreed && window.gameBreed();
+                      } else if (buildMode === type) {
+                        window.gameCancelBuild && window.gameCancelBuild();
+                      } else {
+                        window.gameBuild && window.gameBuild(type);
+                      }
+                    }}
+                  >
+                    <span className="text-xl">{icon}</span>
+                    <span className="text-white text-xs">{cost}🥕</span>
+                  </button>
+                  {/* Tooltip */}
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-40 bg-black/95 rounded-lg p-2 text-xs opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                    <div className="text-yellow-400 font-bold mb-1">{label}</div>
+                    <div className="text-gray-300 mb-1">{desc}</div>
+                    <div className="text-green-400 text-[10px]">{stats}</div>
+                    <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-full border-4 border-transparent border-t-black/95"></div>
+                  </div>
+                </div>
               ))}
             </div>
             {buildMode && (
