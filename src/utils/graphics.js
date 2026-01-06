@@ -250,6 +250,8 @@ export function createEnhancedGround(scene) {
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   texture.repeat.set(8, 8);
+  texture.needsUpdate = true;
+  texture.colorSpace = THREE.SRGBColorSpace;
 
   // Simple flat ground for proper raycasting
   const groundGeometry = new THREE.PlaneGeometry(120, 120);
@@ -257,8 +259,7 @@ export function createEnhancedGround(scene) {
   const groundMaterial = new THREE.MeshStandardMaterial({
     map: texture,
     roughness: 0.85,
-    metalness: 0.0,
-    envMapIntensity: 0.3
+    metalness: 0.0
   });
 
   const ground = new THREE.Mesh(groundGeometry, groundMaterial);

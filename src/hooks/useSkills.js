@@ -1,46 +1,67 @@
-import { useState, useCallback, useEffect } from 'react'
-import { DEFAULT_SKILLS, DEFAULT_META, STORAGE_KEYS } from '../constants'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { DEFAULT_SKILLS, DEFAULT_META } from '../constants'
+import { saveToIndexedDB, loadFromIndexedDB, migrateFromLocalStorage, STORAGE_KEYS } from '../storage/indexedDB'
 
-// Load skills from localStorage
-function loadSkills() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEYS.SKILLS)
-    if (saved) return JSON.parse(saved)
-  } catch (e) {
-    console.warn('Failed to load skills:', e)
-  }
-  return JSON.parse(JSON.stringify(DEFAULT_SKILLS))
-}
-
-// Load meta from localStorage
-function loadMeta() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEYS.META)
-    if (saved) return JSON.parse(saved)
-  } catch (e) {
-    console.warn('Failed to load meta:', e)
-  }
-  return { ...DEFAULT_META }
+const LOCAL_STORAGE_KEYS = {
+  SKILLS: 'guineaPigTD_skills',
+  META: 'guineaPigTD_meta'
 }
 
 export function useSkills() {
-  const [skills, setSkills] = useState(loadSkills)
-  const [meta, setMeta] = useState(loadMeta)
+  const [skills, setSkills] = useState(() => JSON.parse(JSON.stringify(DEFAULT_SKILLS)))
+  const [meta, setMeta] = useState(() => ({ ...DEFAULT_META }))
+  const [isLoaded, setIsLoaded] = useState(false)
+  const isSaving = useRef(false)
 
-  // Save progress to localStorage
-  const saveProgress = useCallback(() => {
+  // Load data from IndexedDB on mount (with localStorage migration)
+  useEffect(() => {
+    async function loadData() {
+      try {
+        // Migrate from localStorage if needed
+        await migrateFromLocalStorage(LOCAL_STORAGE_KEYS.SKILLS, STORAGE_KEYS.SKILLS)
+        await migrateFromLocalStorage(LOCAL_STORAGE_KEYS.META, STORAGE_KEYS.META)
+
+        // Load from IndexedDB
+        const savedSkills = await loadFromIndexedDB(STORAGE_KEYS.SKILLS)
+        const savedMeta = await loadFromIndexedDB(STORAGE_KEYS.META)
+
+        if (savedSkills) {
+          setSkills(savedSkills)
+        }
+        if (savedMeta) {
+          setMeta(savedMeta)
+        }
+      } catch (error) {
+        console.error('Failed to load from IndexedDB:', error)
+      } finally {
+        setIsLoaded(true)
+      }
+    }
+    loadData()
+  }, [])
+
+  // Save progress to IndexedDB
+  const saveProgress = useCallback(async () => {
+    if (isSaving.current) return
+    isSaving.current = true
     try {
-      localStorage.setItem(STORAGE_KEYS.SKILLS, JSON.stringify(skills))
-      localStorage.setItem(STORAGE_KEYS.META, JSON.stringify(meta))
-    } catch (e) {
-      console.warn('Failed to save progress:', e)
+      await Promise.all([
+        saveToIndexedDB(STORAGE_KEYS.SKILLS, skills),
+        saveToIndexedDB(STORAGE_KEYS.META, meta)
+      ])
+    } catch (error) {
+      console.error('Failed to save progress:', error)
+    } finally {
+      isSaving.current = false
     }
   }, [skills, meta])
 
-  // Auto-save when skills or meta change
+  // Auto-save when skills or meta change (only after initial load)
   useEffect(() => {
-    saveProgress()
-  }, [skills, meta, saveProgress])
+    if (isLoaded) {
+      saveProgress()
+    }
+  }, [skills, meta, isLoaded, saveProgress])
 
   // Get the current effect value of a skill
   const getSkillEffect = useCallback((skillId) => {
@@ -103,6 +124,7 @@ export function useSkills() {
   return {
     skills,
     meta,
+    isLoaded,
     getSkillEffect,
     upgradeSkill,
     resetSkills,

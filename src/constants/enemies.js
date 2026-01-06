@@ -64,3 +64,44 @@ export const WAVE_CONFIGS = [
 ]
 
 export const TOTAL_WAVES = WAVE_CONFIGS.length
+
+// Enemy AI Behavior profiles for the Threat/Aggro system
+export const ENEMY_BEHAVIOR = {
+  fox: {
+    defenderFocus: 0.6,       // Greift Verteidiger gerne an
+    threatMultiplier: 1.2,    // Reagiert stark auf Damage
+    retaliationChance: 0.8,   // 80% Chance zurückzuschlagen
+    aggroRange: 10,           // Sieht Angreifer in 10 Einheiten
+    leashRange: 12,           // Kehrt nach 12 Einheiten um
+  },
+  boss_fox: {
+    defenderFocus: 0.4,       // Fokussiert mehr auf Ziel
+    threatMultiplier: 0.8,
+    retaliationChance: 0.5,
+    aggroRange: 12,
+    leashRange: 15,
+  },
+  raven: {
+    defenderFocus: 0.7,       // Hasst Ranged-Einheiten
+    threatMultiplier: 1.5,    // Sehr reaktiv
+    retaliationChance: 0.9,
+    aggroRange: 14,           // Fliegt = sieht weiter
+    leashRange: 20,
+    priorityTargets: ['bomber', 'tower'], // Zielt auf Ranged
+  },
+  boss_raven: {
+    defenderFocus: 0.5,
+    threatMultiplier: 1.0,
+    retaliationChance: 0.6,
+    aggroRange: 16,
+    leashRange: 25,
+    priorityTargets: ['bomber', 'tower'],
+  },
+  snake: {
+    defenderFocus: 0.2,       // Bleibt bei Buildings
+    threatMultiplier: 0.5,    // Ignoriert meist Damage
+    retaliationChance: 0.3,   // Nur 30% Retaliation
+    aggroRange: 6,
+    leashRange: 8,
+  },
+}

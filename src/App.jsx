@@ -1,4 +1,4 @@
-import GuineaPigTDRoguelike from '../guinea-pig-td-roguelike'
+import GuineaPigTDRoguelike from './GuineaPigTDRoguelike'
 
 export default function App() {
   return <GuineaPigTDRoguelike />

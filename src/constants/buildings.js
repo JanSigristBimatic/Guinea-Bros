@@ -38,12 +38,23 @@ export const BUILDING_TYPES = {
     label: 'Mauer',
     description: 'Blockiert Feinde und absorbiert Schaden',
   },
+  beaverHut: {
+    baseCost: 20,
+    health: 180,
+    spawnInterval: 25,
+    maxBeavers: 2,
+    color: { wood: 0x8B4513, roof: 0xA0522D, accent: 0xD2691E },
+    icon: '🦫',
+    label: 'Biber-Hütte',
+    description: 'Spawnt Biber die Holz sammeln und reparieren',
+  },
 }
 
 export const BUILDING_ICONS = {
   collectorHut: { color: 0xFFA500, size: 0.2 },
   heroHut: { color: 0x9932CC, size: 0.2 },
   tower: { color: 0xFF4500, size: 0.2 },
+  beaverHut: { color: 0x8B4513, size: 0.2 },
 }
 
 // Quick access to building costs
@@ -52,4 +63,5 @@ export const BUILDING_COSTS = {
   heroHut: BUILDING_TYPES.heroHut.baseCost,
   tower: BUILDING_TYPES.tower.baseCost,
   wall: BUILDING_TYPES.wall.baseCost,
+  beaverHut: BUILDING_TYPES.beaverHut.baseCost,
 }

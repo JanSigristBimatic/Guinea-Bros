@@ -6,7 +6,16 @@ import {
   createEnhancedLighting,
   createClouds,
   createDustParticles
-} from './src/utils/graphics.js';
+} from './utils/graphics.js';
+import { createLandscape } from './game/systems/landscape.js';
+import { WallGrid } from './game/systems/wallGrid.js';
+import { PathfindingSystem } from './game/systems/pathfinding.js';
+import { addThreat, decayThreat, clearThreat, selectTarget, THREAT_CONFIG } from './game/systems/threat.js';
+import { createWallSegment, updateWallSegmentGeometry } from './game/entities/Building.js';
+import soundSystem from './audio/SoundSystem.js';
+import { saveToIndexedDB, loadFromIndexedDB, migrateFromLocalStorage, STORAGE_KEYS } from './storage/indexedDB.js';
+import { DEFAULT_SKILLS, DEFAULT_META, SKILL_TIERS } from './constants/skills.js';
+import { WAVE_CONFIGS } from './constants/enemies.js';
 
 // ============== GLB MODEL POSITIONING HELPER ==============
 /**
@@ -44,66 +53,123 @@ function positionModelOnGround(model, scale = 1, options = {}) {
   };
 }
 
-// ============== PERSISTENT SKILL TREE DATA ==============
-const DEFAULT_SKILLS = {
-  // Tier 1 - Basic
-  startCarrots: { level: 0, max: 5, cost: [10, 20, 35, 50, 75], effect: [5, 10, 15, 25, 40], name: 'Startkapital', desc: '+{} Startkarotten', icon: '🥕' },
-  baseHealth: { level: 0, max: 5, cost: [15, 30, 50, 75, 100], effect: [25, 50, 75, 125, 200], name: 'Festungsbau', desc: '+{} Basis-HP', icon: '🏠' },
-  dayLength: { level: 0, max: 3, cost: [20, 40, 70], effect: [15, 30, 45], name: 'Lange Tage', desc: '+{}s Tageslänge', icon: '☀️' },
-  
-  // Tier 2 - Collectors
-  collectorSpeed: { level: 0, max: 4, cost: [25, 50, 80, 120], effect: [15, 30, 50, 75], name: 'Flinke Sammler', desc: '+{}% Sammler-Speed', icon: '🏃' },
-  collectorCapacity: { level: 0, max: 3, cost: [30, 60, 100], effect: [1, 2, 3], name: 'Grosse Taschen', desc: '+{} Tragekapazität', icon: '🎒' },
-  autoCollect: { level: 0, max: 1, cost: [150], effect: [1], name: 'Magnetfeld', desc: 'Karotten fliegen zu dir', icon: '🧲' },
-  
-  // Tier 3 - Buildings
-  cheapBuildings: { level: 0, max: 4, cost: [35, 70, 110, 160], effect: [10, 20, 30, 40], name: 'Effizienter Bau', desc: '-{}% Gebäudekosten', icon: '🔨' },
-  towerDamage: { level: 0, max: 5, cost: [30, 55, 85, 120, 170], effect: [20, 40, 65, 100, 150], name: 'Scharfschütze', desc: '+{}% Turm-Schaden', icon: '🎯' },
-  towerRange: { level: 0, max: 3, cost: [40, 80, 130], effect: [15, 30, 50], name: 'Weitsicht', desc: '+{}% Turm-Reichweite', icon: '👁️' },
-  wallHealth: { level: 0, max: 4, cost: [25, 45, 75, 110], effect: [50, 100, 175, 300], name: 'Stahlmauern', desc: '+{} Mauer-HP', icon: '🧱' },
-  
-  // Tier 4 - Heroes
-  heroSpawnRate: { level: 0, max: 3, cost: [50, 100, 175], effect: [3, 6, 10], name: 'Heldenruf', desc: '-{}s Helden-Spawn', icon: '⚔️' },
-  heroStats: { level: 0, max: 4, cost: [45, 85, 140, 200], effect: [15, 30, 50, 80], name: 'Elite-Training', desc: '+{}% Helden-Stats', icon: '💪' },
-  startHero: { level: 0, max: 1, cost: [200], effect: [1], name: 'Veteranen', desc: 'Starte mit 1 Held', icon: '🦸' },
-  
-  // Tier 5 - Special
-  critChance: { level: 0, max: 3, cost: [60, 120, 200], effect: [10, 20, 35], name: 'Kritische Treffer', desc: '{}% Crit-Chance', icon: '⚡' },
-  rageBonus: { level: 0, max: 2, cost: [80, 160], effect: [25, 50], name: 'Berserker', desc: '+{}% Rage-Bonus', icon: '🔥' },
-  weatherMaster: { level: 0, max: 2, cost: [100, 200], effect: [1, 2], name: 'Wetterkontrolle', desc: 'Bessere Wetter-Effekte', icon: '🌤️' },
-  
-  // Tier 6 - Ultimate
-  goldenAge: { level: 0, max: 1, cost: [500], effect: [1], name: 'Goldenes Zeitalter', desc: 'Goldene Karotten +50% häufiger', icon: '✨' },
-  fortress: { level: 0, max: 1, cost: [750], effect: [1], name: 'Uneinnehmbar', desc: 'Basis regeneriert 1 HP/s', icon: '🏰' },
-};
+// ============== SAFE MATERIAL CLONING ==============
+/**
+ * Safely clone a material, ensuring texture maps are properly handled
+ * for Three.js 0.160+ compatibility
+ */
+function safeCloneMaterial(material) {
+  if (!material) return material;
 
-function loadSkills() {
-  try {
-    const saved = localStorage.getItem('guineaPigTD_skills');
-    if (saved) return JSON.parse(saved);
-  } catch (e) {}
-  return JSON.parse(JSON.stringify(DEFAULT_SKILLS));
+  const cloned = material.clone();
+
+  // Ensure texture maps are properly referenced and marked for update
+  if (cloned.map) {
+    cloned.map.needsUpdate = true;
+  }
+  if (cloned.normalMap) {
+    cloned.normalMap.needsUpdate = true;
+  }
+  if (cloned.roughnessMap) {
+    cloned.roughnessMap.needsUpdate = true;
+  }
+  if (cloned.metalnessMap) {
+    cloned.metalnessMap.needsUpdate = true;
+  }
+  if (cloned.aoMap) {
+    cloned.aoMap.needsUpdate = true;
+  }
+  if (cloned.emissiveMap) {
+    cloned.emissiveMap.needsUpdate = true;
+  }
+
+  // Mark the cloned material as needing update
+  cloned.needsUpdate = true;
+
+  return cloned;
 }
 
-function loadMeta() {
+/**
+ * Safely traverse and clone materials on a model
+ */
+function safeCloneMaterials(object) {
+  object.traverse((child) => {
+    if (child.isMesh && child.material) {
+      if (Array.isArray(child.material)) {
+        child.material = child.material.map(m => safeCloneMaterial(m));
+      } else {
+        child.material = safeCloneMaterial(child.material);
+      }
+    }
+  });
+}
+
+// ============== PERSISTENT SKILL TREE DATA ==============
+function normalizeSkills(raw) {
+  const normalized = JSON.parse(JSON.stringify(DEFAULT_SKILLS));
+  if (!raw || typeof raw !== 'object') return normalized;
+
+  Object.keys(normalized).forEach((skillId) => {
+    const saved = raw[skillId];
+    if (!saved) return;
+    const level = Number(saved.level);
+    if (Number.isFinite(level)) {
+      const max = normalized[skillId].max;
+      normalized[skillId].level = Math.max(0, Math.min(max, Math.floor(level)));
+    }
+  });
+
+  return normalized;
+}
+
+function normalizeMeta(raw) {
+  const normalized = { ...DEFAULT_META };
+  if (!raw || typeof raw !== 'object') return normalized;
+
+  Object.keys(normalized).forEach((key) => {
+    const value = Number(raw[key]);
+    if (Number.isFinite(value)) {
+      normalized[key] = value;
+    }
+  });
+
+  return normalized;
+}
+
+// Initial sync load returns defaults
+function loadSkillsSync() {
+  return normalizeSkills();
+}
+
+function loadMetaSync() {
+  return normalizeMeta();
+}
+
+// Async load from IndexedDB with localStorage migration
+async function loadSkillsAsync() {
   try {
-    const saved = localStorage.getItem('guineaPigTD_meta');
-    if (saved) return JSON.parse(saved);
-  } catch (e) {}
-  return { totalGames: 0, bestWave: 0, totalCarrots: 0, skillPoints: 0, bossesKilled: 0 };
+    await migrateFromLocalStorage('guineaPigTD_skills', STORAGE_KEYS.SKILLS);
+    const saved = await loadFromIndexedDB(STORAGE_KEYS.SKILLS);
+    if (saved) return normalizeSkills(saved);
+  } catch (e) {
+    console.warn('Failed to load skills from IndexedDB:', e);
+  }
+  return normalizeSkills();
+}
+
+async function loadMetaAsync() {
+  try {
+    await migrateFromLocalStorage('guineaPigTD_meta', STORAGE_KEYS.META);
+    const saved = await loadFromIndexedDB(STORAGE_KEYS.META);
+    if (saved) return normalizeMeta(saved);
+  } catch (e) {
+    console.warn('Failed to load meta from IndexedDB:', e);
+  }
+  return normalizeMeta();
 }
 
 // ============== WAVE CONFIGURATION ==============
-const WAVES_CONFIG = [
-  { foxes: 5, ravens: 0, snakes: 0, delay: 1.8 },
-  { foxes: 7, ravens: 3, snakes: 0, delay: 1.5 },
-  { foxes: 8, ravens: 5, snakes: 2, delay: 1.3, boss: 'fox' },
-  { foxes: 12, ravens: 7, snakes: 4, delay: 1.1 },
-  { foxes: 15, ravens: 10, snakes: 5, delay: 0.9 },
-  { foxes: 18, ravens: 12, snakes: 8, delay: 0.8, boss: 'raven' },
-  { foxes: 22, ravens: 15, snakes: 10, delay: 0.7 },
-  { foxes: 30, ravens: 20, snakes: 15, delay: 0.5, boss: 'both' },
-];
+const WAVES_CONFIG = WAVE_CONFIGS;
 
 export default function GuineaPigTDRoguelike() {
   const containerRef = useRef(null);
@@ -112,6 +178,7 @@ export default function GuineaPigTDRoguelike() {
   
   // Game state
   const [score, setScore] = useState(0);
+  const [wood, setWood] = useState(0);
   const [wave, setWave] = useState(0);
   const [phase, setPhase] = useState('menu');
   const [baseHealth, setBaseHealth] = useState(100);
@@ -126,29 +193,84 @@ export default function GuineaPigTDRoguelike() {
   const [weather, setWeather] = useState('sunny');
   const [rageMode, setRageMode] = useState(false);
   const [bossActive, setBossActive] = useState(false);
-  
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [difficulty, setDifficulty] = useState('normal'); // 'easy', 'normal', 'hard'
+
+  // Difficulty modifiers
+  const DIFFICULTY_MODS = {
+    easy: { enemyHealth: 0.7, enemyDamage: 0.7, enemySpeed: 0.85, carrotValue: 1.3, spawnRate: 1.3, label: 'Leicht', icon: '🌱' },
+    normal: { enemyHealth: 1.0, enemyDamage: 1.0, enemySpeed: 1.0, carrotValue: 1.0, spawnRate: 1.0, label: 'Normal', icon: '⚔️' },
+    hard: { enemyHealth: 1.5, enemyDamage: 1.4, enemySpeed: 1.15, carrotValue: 0.8, spawnRate: 0.7, label: 'Schwer', icon: '💀' },
+  };
+
   // Building state
   const [buildMode, setBuildMode] = useState(null);
   const [buildings, setBuildings] = useState([]);
   const [buildRotation, setBuildRotation] = useState(0); // 0, 45, 90, 135, 180, 225, 270, 315 degrees
   const [wallDragStart, setWallDragStart] = useState(null); // For wall drag-building
+
+  // Wall Grid and Pathfinding Systems (persistent refs)
+  const wallGridRef = useRef(null);
+  const pathfindingRef = useRef(null);
+
+  // Initialize systems lazily
+  if (!wallGridRef.current) {
+    wallGridRef.current = new WallGrid(2); // 2x2 grid cells
+  }
+  if (!pathfindingRef.current) {
+    pathfindingRef.current = new PathfindingSystem(wallGridRef.current);
+  }
   
   // Skill tree
   const [showSkillTree, setShowSkillTree] = useState(false);
-  const [skills, setSkills] = useState(loadSkills);
-  const [meta, setMeta] = useState(loadMeta);
-  
-  // Save skills
-  const saveProgress = useCallback(() => {
-    localStorage.setItem('guineaPigTD_skills', JSON.stringify(skills));
-    localStorage.setItem('guineaPigTD_meta', JSON.stringify(meta));
+  const [skills, setSkills] = useState(loadSkillsSync);
+  const [meta, setMeta] = useState(loadMetaSync);
+  const [skillsLoaded, setSkillsLoaded] = useState(false);
+  const isSavingRef = useRef(false);
+
+  // Load skills from IndexedDB on mount
+  useEffect(() => {
+    async function loadFromDB() {
+      const [loadedSkills, loadedMeta] = await Promise.all([
+        loadSkillsAsync(),
+        loadMetaAsync()
+      ]);
+      setSkills(loadedSkills);
+      setMeta(loadedMeta);
+      setSkillsLoaded(true);
+    }
+    loadFromDB();
+  }, []);
+
+  // Save skills to IndexedDB
+  const saveProgress = useCallback(async () => {
+    if (isSavingRef.current) return;
+    isSavingRef.current = true;
+    try {
+      await Promise.all([
+        saveToIndexedDB(STORAGE_KEYS.SKILLS, skills),
+        saveToIndexedDB(STORAGE_KEYS.META, meta)
+      ]);
+    } catch (e) {
+      console.warn('Failed to save progress:', e);
+    } finally {
+      isSavingRef.current = false;
+    }
   }, [skills, meta]);
+
+  // Auto-save when skills/meta change (after initial load)
+  useEffect(() => {
+    if (skillsLoaded) {
+      saveProgress();
+    }
+  }, [skills, meta, skillsLoaded, saveProgress]);
 
   // Calculate skill effects
   const getSkillEffect = useCallback((skillId) => {
     const skill = skills[skillId];
     if (!skill || skill.level === 0) return 0;
-    return skill.effect[skill.level - 1];
+    const value = skill.effect?.[skill.level - 1];
+    return Number.isFinite(value) ? value : 0;
   }, [skills]);
 
   // Building costs with skill discount
@@ -156,11 +278,15 @@ export default function GuineaPigTDRoguelike() {
     const baseCosts = {
       collectorHut: 15,
       heroHut: 35,
+      beaverHut: 20,
       tower: 25,
+      gate: 8,
       wall: 8,
     };
     const discount = getSkillEffect('cheapBuildings') / 100;
-    return Math.floor(baseCosts[type] * (1 - discount));
+    const baseCost = baseCosts[type];
+    if (!Number.isFinite(baseCost)) return 0;
+    return Math.floor(baseCost * (1 - discount));
   }, [getSkillEffect]);
 
   // Upgrade skill
@@ -169,7 +295,9 @@ export default function GuineaPigTDRoguelike() {
     if (skill.level >= skill.max) return;
     const cost = skill.cost[skill.level];
     if (meta.skillPoints < cost) return;
-    
+
+    soundSystem.init();
+    soundSystem.upgrade();
     setMeta(prev => ({ ...prev, skillPoints: prev.skillPoints - cost }));
     setSkills(prev => ({
       ...prev,
@@ -179,6 +307,8 @@ export default function GuineaPigTDRoguelike() {
 
   // Start game
   const startGame = useCallback(() => {
+    soundSystem.init();
+    soundSystem.click();
     setPhase('loading');
     setShowSkillTree(false);
     setTimeout(() => initGame(), 100);
@@ -229,11 +359,30 @@ export default function GuineaPigTDRoguelike() {
     // ============== GROUND ==============
     const ground = createEnhancedGround(scene);
 
+    // ============== LANDSCAPE (Trees, Rocks, Bushes) ==============
+    const landscapeSystem = createLandscape(scene);
+    // Load GLB assets async, fallback to procedural if not found
+    landscapeSystem.loadAssets().then(hasAssets => {
+      console.log(`[Landscape] Assets loaded: ${hasAssets}`);
+      landscapeSystem.generate();
+    }).catch(err => {
+      console.log('[Landscape] Using procedural generation');
+      landscapeSystem.generate();
+    });
+
     // Grid for building (subtle)
     const gridHelper = new THREE.GridHelper(40, 20, 0x3d8b40, 0x3d8b40);
     gridHelper.position.y = 0.01;
-    gridHelper.material.opacity = 0.2;
-    gridHelper.material.transparent = true;
+    // In Three.js 0.160+, GridHelper.material is an array
+    if (Array.isArray(gridHelper.material)) {
+      gridHelper.material.forEach(mat => {
+        mat.opacity = 0.2;
+        mat.transparent = true;
+      });
+    } else {
+      gridHelper.material.opacity = 0.2;
+      gridHelper.material.transparent = true;
+    }
     scene.add(gridHelper);
 
     // Defense zones
@@ -282,16 +431,49 @@ export default function GuineaPigTDRoguelike() {
     scene.add(rain);
 
     // ============== MAIN BURROW (enhanced) ==============
+    const castleBlockedCells = new Set();
+    const updateCastleBlockedCells = (radius) => {
+      const wallGrid = wallGridRef.current;
+      if (!wallGrid || !Number.isFinite(radius)) return;
+
+      // Clear previous castle blocks
+      for (const key of castleBlockedCells) {
+        const { gx, gz } = wallGrid.parseKey(key);
+        wallGrid.setBlocked(gx, gz, false);
+      }
+      castleBlockedCells.clear();
+
+      const cellSize = wallGrid.cellSize || 2;
+      const maxOffset = Math.ceil(radius / cellSize);
+      for (let gx = -maxOffset; gx <= maxOffset; gx++) {
+        for (let gz = -maxOffset; gz <= maxOffset; gz++) {
+          const world = wallGrid.gridToWorld(gx, gz);
+          const dist = Math.sqrt(world.x * world.x + world.z * world.z);
+          if (dist <= radius) {
+            wallGrid.setBlocked(gx, gz, true);
+            castleBlockedCells.add(wallGrid.getKey(gx, gz));
+          }
+        }
+      }
+
+      if (pathfindingRef.current) {
+        pathfindingRef.current.clearCache();
+      }
+    };
+
     function createMainBurrow() {
       const group = new THREE.Group();
-      
-      // Main mound
+      group.userData.isCastle = true;
+      group.userData.collisionRadius = 3.5;
+      const fallback = new THREE.Group();
+
+      // Fallback mound (used if castle fails to load)
       const moundGeo = new THREE.SphereGeometry(4.5, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
       const moundMat = new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.9 });
       const mound = new THREE.Mesh(moundGeo, moundMat);
       mound.castShadow = true;
       mound.receiveShadow = true;
-      group.add(mound);
+      fallback.add(mound);
 
       // Entrance
       const holeGeo = new THREE.CircleGeometry(1.5, 32);
@@ -300,7 +482,7 @@ export default function GuineaPigTDRoguelike() {
       hole.position.set(3.5, 1.2, 0);
       hole.rotation.y = -Math.PI / 2;
       hole.rotation.x = -0.3;
-      group.add(hole);
+      fallback.add(hole);
 
       // Decorative elements
       const roofGeo = new THREE.ConeGeometry(2, 1.5, 8);
@@ -308,19 +490,20 @@ export default function GuineaPigTDRoguelike() {
       const roof = new THREE.Mesh(roofGeo, roofMat);
       roof.position.set(0, 4.5, 0);
       roof.castShadow = true;
-      group.add(roof);
+      fallback.add(roof);
+
+      group.add(fallback);
 
       // Flag
       const poleGeo = new THREE.CylinderGeometry(0.08, 0.08, 2.5, 8);
       const poleMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
       const pole = new THREE.Mesh(poleGeo, poleMat);
-      pole.position.set(0, 5.5, 0);
       group.add(pole);
 
       const flagGeo = new THREE.PlaneGeometry(1.2, 0.8);
       const flagMat = new THREE.MeshStandardMaterial({ color: 0xFF6B35, side: THREE.DoubleSide });
       const flag = new THREE.Mesh(flagGeo, flagMat);
-      flag.position.set(0.6, 6.2, 0);
+      flag.position.set(0.6, 0, 0);
       group.add(flag);
       group.userData.flag = flag;
 
@@ -328,17 +511,54 @@ export default function GuineaPigTDRoguelike() {
       const hpBgGeo = new THREE.PlaneGeometry(6, 0.5);
       const hpBgMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
       const hpBg = new THREE.Mesh(hpBgGeo, hpBgMat);
-      hpBg.position.set(0, 7.5, 0);
       hpBg.rotation.x = -0.3;
       group.add(hpBg);
 
       const hpBarGeo = new THREE.PlaneGeometry(5.8, 0.4);
       const hpBarMat = new THREE.MeshBasicMaterial({ color: 0x00FF00 });
       const hpBar = new THREE.Mesh(hpBarGeo, hpBarMat);
-      hpBar.position.set(0, 7.52, 0.02);
       hpBar.rotation.x = -0.3;
       group.add(hpBar);
       group.userData.hpBar = hpBar;
+
+      const updateMainUI = (baseHeight) => {
+        const poleCenter = baseHeight + 1.0;
+        pole.position.set(0, poleCenter, 0);
+        flag.position.y = baseHeight + 1.7;
+        hpBg.position.set(0, baseHeight + 3.0, 0);
+        hpBar.position.set(0, baseHeight + 3.02, 0.02);
+        const radius = Math.max(3.0, baseHeight * 0.7);
+        group.userData.collisionRadius = radius;
+        updateCastleBlockedCells(radius);
+      };
+
+      // Initial UI height for fallback mound
+      updateMainUI(4.5);
+
+      // Castle model
+      const loader = new GLTFLoader();
+      const castlePath = '/glb/KayKit_Medieval_Hexagon_Pack_1.0_FREE/Assets/gltf/buildings/green/building_castle_green.gltf';
+      const castleScale = 2.6;
+      loader.load(
+        castlePath,
+        (gltf) => {
+          const model = gltf.scene;
+          const info = positionModelOnGround(model, castleScale);
+          model.traverse((child) => {
+            if (child.isMesh) {
+              child.castShadow = true;
+              child.receiveShadow = true;
+            }
+          });
+          group.add(model);
+          fallback.visible = false;
+          updateMainUI(info.size.y);
+        },
+        undefined,
+        (error) => {
+          console.error('Error loading main castle model:', error);
+        }
+      );
 
       return group;
     }
@@ -349,27 +569,40 @@ export default function GuineaPigTDRoguelike() {
     // ============== GUINEA PIG HOUSES ==============
     // Gebäude mit GLB-Modellen
     const buildingModelPaths = {
-      collectorHut: '/glb/Buildings/House.glb',
-      heroHut: '/glb/Buildings/Fort.glb',
-      tower: '/glb/Buildings/Tower.glb',
+      collectorHut: '/glb/KayKit_Medieval_Hexagon_Pack_1.0_FREE/Assets/gltf/buildings/green/building_home_A_green.gltf',
+      heroHut: '/glb/KayKit_Medieval_Hexagon_Pack_1.0_FREE/Assets/gltf/buildings/green/building_barracks_green.gltf',
+      tower: '/glb/KayKit_Medieval_Hexagon_Pack_1.0_FREE/Assets/gltf/buildings/green/building_tower_A_green.gltf',
+      beaverHut: '/glb/KayKit_Medieval_Hexagon_Pack_1.0_FREE/Assets/gltf/buildings/green/building_lumbermill_green.gltf',
     };
 
     const buildingScales = {
-      collectorHut: 1.6,
-      heroHut: 3.2,
-      tower: 2.4,
+      collectorHut: 2.0,
+      heroHut: 2.4,
+      tower: 2.2,
+      beaverHut: 2.1,
+    };
+
+    const buildingCollisionRadii = {
+      collectorHut: 1.4,
+      heroHut: 1.7,
+      tower: 1.4,
+      beaverHut: 1.5,
+      wall: 1.0,
+      gate: 1.0,
     };
 
     function createGuineaPigHouse(type) {
+      const isWallLike = type === 'wall' || type === 'gate';
       const group = new THREE.Group();
       group.userData = {
         type,
         spawnTimer: 0,
-        health: type === 'wall' ? (100 + getSkillEffect('wallHealth')) : 200,
-        maxHealth: type === 'wall' ? (100 + getSkillEffect('wallHealth')) : 200,
+        health: isWallLike ? (100 + getSkillEffect('wallHealth')) : 200,
+        maxHealth: isWallLike ? (100 + getSkillEffect('wallHealth')) : 200,
+        collisionRadius: buildingCollisionRadii[type] || 1.4,
       };
 
-      if (type === 'wall') {
+      if (isWallLike) {
         // Simple wall segment (keep procedural)
         const wallGeo = new THREE.BoxGeometry(2, 1.8, 0.6);
         const wallMat = new THREE.MeshStandardMaterial({ color: 0x696969, roughness: 0.9 });
@@ -394,7 +627,7 @@ export default function GuineaPigTDRoguelike() {
             const model = gltf.scene;
             const scale = buildingScales[type] || 1;
             // Automatische Boden-Positionierung
-            positionModelOnGround(model, scale);
+            const info = positionModelOnGround(model, scale);
             model.traverse((child) => {
               if (child.isMesh) {
                 child.castShadow = true;
@@ -402,6 +635,12 @@ export default function GuineaPigTDRoguelike() {
               }
             });
             group.add(model);
+            if (info?.size) {
+              const radius = Math.max(info.size.x, info.size.z) * 0.55;
+              if (Number.isFinite(radius) && radius > 0.5) {
+                group.userData.collisionRadius = radius;
+              }
+            }
           },
           undefined,
           (error) => {
@@ -418,7 +657,7 @@ export default function GuineaPigTDRoguelike() {
       }
 
       // HP bar for all buildings (adjusted for larger models)
-      const hpBarHeight = type === 'wall' ? 2.5 : (type === 'tower' ? 10 : (type === 'heroHut' ? 12 : 6));
+      const hpBarHeight = isWallLike ? 2.5 : (type === 'tower' ? 10 : (type === 'heroHut' ? 12 : 6));
       const hpBgGeo = new THREE.PlaneGeometry(2, 0.2);
       const hpBg = new THREE.Mesh(hpBgGeo, new THREE.MeshBasicMaterial({ color: 0x333333 }));
       hpBg.position.y = hpBarHeight;
@@ -1366,7 +1605,7 @@ healerEditor.config            - Aktuelle Werte zeigen
         if (type !== 'normal') {
           carrotModel.traverse((child) => {
             if (child.isMesh) {
-              child.material = child.material.clone();
+              child.material = safeCloneMaterial(child.material);
               child.material.emissive = new THREE.Color(colors[type]);
               child.material.emissiveIntensity = 0.4;
             }
@@ -1431,7 +1670,9 @@ healerEditor.config            - Aktuelle Werte zeigen
       let type = 'normal';
       const roll = Math.random();
       const goldenBonus = getSkillEffect('goldenAge') ? 0.5 : 0;
-      if (roll < 0.02 + goldenBonus * 0.02) type = 'golden';
+      // Weather Master + Sunny = extra golden chance
+      const weatherMasterSunnyBonus = (gameState.weather === 'sunny' && getSkillEffect('weatherMaster') >= 1) ? 0.03 : 0;
+      if (roll < 0.02 + goldenBonus * 0.02 + weatherMasterSunnyBonus) type = 'golden';
       else if (roll < 0.08) type = 'blue';
 
       const carrot = createCarrot(x, z, type);
@@ -1623,10 +1864,18 @@ healerEditor.config            - Aktuelle Werte zeigen
       rageActive: false,
       bossWave: false,
       speedBoostTimer: 0,
+      // Snake Poison system
+      poisonedTargets: [], // { target, damage, duration, tickTimer }
+      basePoisoned: false,
+      basePoisonDamage: 0,
+      basePoisonDuration: 0,
+      basePoisonTickTimer: 0,
+      wood: 0,
     };
     gameRef.current = gameState;
 
     setScore(gameState.score);
+    setWood(0);
     setBaseHealth(gameState.baseHealth);
     setMaxBaseHealth(gameState.maxBaseHealth);
     setPhase('day');
@@ -1741,7 +1990,17 @@ healerEditor.config            - Aktuelle Werte zeigen
     const projectiles = [];
     const effects = [];
     const collectors = [];
+    const beavers = [];
     const buildingObjects = [];
+
+    const UNIT_COLLISION_RADIUS = {
+      player: 0.9,
+      partner: 0.7,
+      collector: 0.65,
+      beaver: 0.65,
+      defender: 0.8,
+      enemy: 0.85,
+    };
 
     // Building preview ghost
     let previewGhost = null;
@@ -1799,23 +2058,86 @@ healerEditor.config            - Aktuelle Werte zeigen
     }
     wallPreviewLine = createWallPreviewLine();
 
+    function findHomeBuilding(type, homePos) {
+      if (!homePos) return null;
+      return buildingObjects.find(b => {
+        if (b.userData.type !== type) return false;
+        const dx = b.position.x - homePos.x;
+        const dz = b.position.z - homePos.z;
+        return Math.sqrt(dx * dx + dz * dz) < 0.5;
+      }) || null;
+    }
+
+    function resolveUnitBuildingCollisions(unit, options = {}) {
+      if (!unit || !unit.visible) return;
+
+      const {
+        unitRadius = 0.7,
+        allowBuilding = null,
+        ignoreCastle = false,
+      } = options;
+
+      const position = unit.position;
+
+      if (!ignoreCastle && mainBurrow?.userData?.collisionRadius) {
+        const dx = position.x - mainBurrow.position.x;
+        const dz = position.z - mainBurrow.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        const radius = mainBurrow.userData.collisionRadius + unitRadius;
+        if (dist > 0 && dist < radius) {
+          const push = radius - dist;
+          position.x += (dx / dist) * push;
+          position.z += (dz / dist) * push;
+        }
+      }
+
+      for (const building of buildingObjects) {
+        if (!building.visible) continue;
+        if (allowBuilding && allowBuilding(building)) continue;
+        const radius = (building.userData.collisionRadius || 1.2) + unitRadius;
+        const dx = position.x - building.position.x;
+        const dz = position.z - building.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist > 0 && dist < radius) {
+          const push = radius - dist;
+          position.x += (dx / dist) * push;
+          position.z += (dz / dist) * push;
+        }
+      }
+    }
+
+    function moveUnitToward(unit, target, speed, stopDistance = 1.0) {
+      const dx = target.x - unit.position.x;
+      const dz = target.z - unit.position.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d <= stopDistance) return d;
+      unit.position.x += (dx / d) * speed;
+      unit.position.z += (dz / d) * speed;
+      unit.rotation.y = Math.atan2(-dz, dx);
+      return d;
+    }
+
     function createPreviewGhost(type) {
       if (previewGhost) {
         scene.remove(previewGhost);
         previewGhost = null;
       }
 
-      const ghost = createGuineaPigHouse(type);
+      // Use new segment geometry for walls
+      const isWallPreview = type === 'wall' || type === 'gate';
+      const wallSegmentType = type === 'gate' ? 'gate' : 'post';
+      const ghost = isWallPreview ? createWallSegment(wallSegmentType) : createGuineaPigHouse(type);
       // Make it semi-transparent
       ghost.traverse((child) => {
         if (child.isMesh) {
-          child.material = child.material.clone();
+          child.material = safeCloneMaterial(child.material);
           child.material.transparent = true;
           child.material.opacity = 0.5;
           child.material.depthWrite = false;
         }
       });
       ghost.visible = false;
+      ghost.userData.segmentType = isWallPreview ? wallSegmentType : null;
       scene.add(ghost);
       previewGhost = ghost;
       currentPreviewType = type;
@@ -1824,8 +2146,39 @@ healerEditor.config            - Aktuelle Werte zeigen
 
     function updatePreviewPosition(x, z, rotation, isValid) {
       if (!previewGhost) return;
+
+      // For walls/gates, update segment geometry based on neighbors
+      const isWallPreview = currentPreviewType === 'wall' || currentPreviewType === 'gate';
+      if (isWallPreview && wallGridRef.current) {
+        const grid = wallGridRef.current.worldToGrid(x, z);
+        const wallRotation = Number.isFinite(rotation) ? rotation : 0;
+        const segmentInfo = currentPreviewType === 'gate'
+          ? { type: 'gate', rotation: getGateRotationForGrid(grid.gx, grid.gz, wallRotation) }
+          : (Math.abs(wallRotation % 90) === 45
+            ? { type: 'diagonal', rotation: wallRotation }
+            : getPreviewSegmentType(grid.gx, grid.gz, []));
+
+        // Update geometry if segment type changed
+        if (previewGhost.userData.segmentType !== segmentInfo.type) {
+          scene.remove(previewGhost);
+          previewGhost = createWallSegment(segmentInfo.type);
+          previewGhost.traverse((child) => {
+            if (child.isMesh) {
+              child.material = safeCloneMaterial(child.material);
+              child.material.transparent = true;
+              child.material.opacity = 0.5;
+              child.material.depthWrite = false;
+            }
+          });
+          previewGhost.userData.segmentType = segmentInfo.type;
+          scene.add(previewGhost);
+        }
+        previewGhost.rotation.y = segmentInfo.rotation * Math.PI / 180;
+      } else {
+        previewGhost.rotation.y = rotation * Math.PI / 180;
+      }
+
       previewGhost.position.set(x, 0, z);
-      previewGhost.rotation.y = rotation * Math.PI / 180;
       previewGhost.visible = true;
 
       // Update placement ring
@@ -1877,11 +2230,48 @@ healerEditor.config            - Aktuelle Werte zeigen
       towerRangeBorder.visible = false;
     }
 
+    const isWallLikeType = (type) => type === 'wall' || type === 'gate';
+
+    function getGateRotationForGrid(gx, gz, fallbackRotation = 0) {
+      const wallGrid = wallGridRef.current;
+      if (!wallGrid) {
+        const snapped = Math.round(fallbackRotation / 90) * 90;
+        return ((snapped % 360) + 360) % 360;
+      }
+
+      const north = wallGrid.getWall(gx, gz + 1);
+      const south = wallGrid.getWall(gx, gz - 1);
+      const east = wallGrid.getWall(gx + 1, gz);
+      const west = wallGrid.getWall(gx - 1, gz);
+
+      const hasNS = (!!north && north.segmentType !== 'diagonal') || (!!south && south.segmentType !== 'diagonal');
+      const hasEW = (!!east && east.segmentType !== 'diagonal') || (!!west && west.segmentType !== 'diagonal');
+
+      if (hasEW && !hasNS) return 90;
+      if (hasNS && !hasEW) return 0;
+
+      const snapped = Math.round(fallbackRotation / 90) * 90;
+      return ((snapped % 360) + 360) % 360;
+    }
+
     function checkPlacementValid(x, z, collisionRadius = 2.5) {
       const dist = Math.sqrt(x * x + z * z);
       if (dist < 6 || dist > 14) return false;
 
       for (const b of buildingObjects) {
+        const dx = b.position.x - x;
+        const dz = b.position.z - z;
+        if (Math.sqrt(dx * dx + dz * dz) < collisionRadius) return false;
+      }
+      return true;
+    }
+
+    function checkWallPlacementValid(x, z, collisionRadius = 1.5) {
+      const dist = Math.sqrt(x * x + z * z);
+      if (dist < 6 || dist > 14) return false;
+
+      for (const b of buildingObjects) {
+        if (isWallLikeType(b.userData.type)) continue;
         const dx = b.position.x - x;
         const dz = b.position.z - z;
         if (Math.sqrt(dx * dx + dz * dz) < collisionRadius) return false;
@@ -1922,6 +2312,7 @@ healerEditor.config            - Aktuelle Werte zeigen
       spawnTimer = 0;
       setMessage(`🌙 Welle ${waveNum + 1}${config.boss ? ' - BOSS!' : ''}`);
       setTimeout(() => setMessage(''), 2500);
+      soundSystem.waveStart();
     }
 
     function spawnEnemy() {
@@ -1936,6 +2327,13 @@ healerEditor.config            - Aktuelle Werte zeigen
       else if (type === 'fox') enemy = createFox();
       else if (type === 'raven') enemy = createRaven();
       else enemy = createSnake();
+
+      // Apply difficulty modifiers to enemy stats
+      const diffMod = DIFFICULTY_MODS[difficulty] || DIFFICULTY_MODS.normal;
+      enemy.userData.health = Math.floor(enemy.userData.health * diffMod.enemyHealth);
+      enemy.userData.maxHealth = Math.floor(enemy.userData.maxHealth * diffMod.enemyHealth);
+      enemy.userData.damage = Math.floor(enemy.userData.damage * diffMod.enemyDamage);
+      enemy.userData.speed = enemy.userData.speed * diffMod.enemySpeed;
 
       enemy.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
       scene.add(enemy);
@@ -2061,13 +2459,16 @@ healerEditor.config            - Aktuelle Werte zeigen
           const positions = getWallPositionsAlongLine(touchBuildStart.x, touchBuildStart.z, endX, endZ);
 
           let wallsPlaced = 0;
+          const wallGrid = wallGridRef.current;
           for (const wallPos of positions) {
-            // Each wall has its own rotation from the angle property
-            if (checkPlacementValid(wallPos.x, wallPos.z, 1.5)) {
-              if (placeBuildingWithRotation(wallPos.x, wallPos.z, wallPos.angle)) {
-                wallsPlaced++;
-              }
-            }
+            const grid = wallGrid.worldToGrid(wallPos.x, wallPos.z);
+            if (wallGrid.isBlockedCell(grid.gx, grid.gz)) break;
+            if (wallGrid.getWall(grid.gx, grid.gz)) continue;
+            if (!checkWallPlacementValid(wallPos.x, wallPos.z, 1.5)) break;
+
+            // Each wall has its own rotation from the line orientation
+            if (!placeBuildingWithRotation(wallPos.x, wallPos.z, wallPos.rotation)) break;
+            wallsPlaced++;
           }
 
           if (wallsPlaced > 0) {
@@ -2117,7 +2518,14 @@ healerEditor.config            - Aktuelle Werte zeigen
           createPreviewGhost(type);
         }
 
-        const isValid = checkPlacementValid(gridX, gridZ);
+        let isValid = checkPlacementValid(gridX, gridZ);
+        if (type === 'wall') {
+          isValid = checkWallPlacementValid(gridX, gridZ, 1.5);
+        } else if (type === 'gate') {
+          const grid = wallGridRef.current.worldToGrid(gridX, gridZ);
+          const occupied = wallGridRef.current.hasWall(grid.gx, grid.gz);
+          isValid = !occupied && checkWallPlacementValid(gridX, gridZ, 1.5);
+        }
         const rotation = gameRef.current.buildRotation || 0;
         updatePreviewPosition(gridX, gridZ, rotation, isValid);
 
@@ -2131,34 +2539,132 @@ healerEditor.config            - Aktuelle Werte zeigen
     }
     containerRef.current.addEventListener('mousemove', handleMouseMove);
 
-    // Calculate wall positions along a line - walls placed exactly along the line without gaps
+    // Calculate wall positions along a line - grid-snapped for Snap & Connect system
     function getWallPositionsAlongLine(x1, z1, x2, z2) {
+      const cellSize = wallGridRef.current?.cellSize || 2;
       const positions = [];
-      const dx = x2 - x1;
-      const dz = z2 - z1;
-      const distance = Math.sqrt(dx * dx + dz * dz);
 
-      // If only start point (click without drag), place single wall at start
-      if (distance < 0.5) {
-        return [{ x: x1, z: z1, angle: 0 }];
+      // Grid-snap start and end
+      const startGX = Math.round(x1 / cellSize);
+      const startGZ = Math.round(z1 / cellSize);
+      let endGX = Math.round(x2 / cellSize);
+      let endGZ = Math.round(z2 / cellSize);
+
+      // If same cell, just return one position
+      if (startGX === endGX && startGZ === endGZ) {
+        return [{
+          x: startGX * cellSize,
+          z: startGZ * cellSize,
+          gx: startGX,
+          gz: startGZ,
+          rotation: 0,
+          segmentType: null
+        }];
       }
 
-      // Wall width is 2 units, place walls exactly along the line
-      const wallSpacing = 2; // Walls are 2 units wide
-      const numWalls = Math.max(1, Math.ceil(distance / wallSpacing));
+      let dx = endGX - startGX;
+      let dz = endGZ - startGZ;
+      let absDx = Math.abs(dx);
+      let absDz = Math.abs(dz);
+      const isDiagonalLine = absDx === absDz && absDx !== 0;
 
-      // Calculate the angle for all walls - wall is aligned along the line
-      const angle = Math.atan2(dz, dx) * 180 / Math.PI;
-
-      for (let i = 0; i < numWalls; i++) {
-        // Place walls at exact positions along the line (not grid-snapped)
-        const t = numWalls === 1 ? 0.5 : i / (numWalls - 1);
-        const x = x1 + dx * t;
-        const z = z1 + dz * t;
-        positions.push({ x, z, angle });
+      if (!isDiagonalLine) {
+        // Snap to the dominant axis for cleaner straight walls
+        if (absDx >= absDz) {
+          endGZ = startGZ;
+        } else {
+          endGX = startGX;
+        }
+        dx = endGX - startGX;
+        dz = endGZ - startGZ;
+        absDx = Math.abs(dx);
+        absDz = Math.abs(dz);
       }
 
-      return positions;
+      if (isDiagonalLine) {
+        const sx = dx > 0 ? 1 : -1;
+        const sz = dz > 0 ? 1 : -1;
+        const steps = absDx;
+        const rotation = dx * dz >= 0 ? 45 : 135;
+        for (let i = 0; i <= steps; i++) {
+          const gx = startGX + i * sx;
+          const gz = startGZ + i * sz;
+          positions.push({
+            x: gx * cellSize,
+            z: gz * cellSize,
+            gx,
+            gz,
+            rotation,
+            segmentType: 'diagonal'
+          });
+        }
+        return positions;
+      }
+
+      if (dx !== 0) {
+        const step = dx > 0 ? 1 : -1;
+        for (let gx = startGX; gx !== endGX + step; gx += step) {
+          positions.push({
+            x: gx * cellSize,
+            z: startGZ * cellSize,
+            gx,
+            gz: startGZ,
+            rotation: 0,
+            segmentType: null
+          });
+        }
+      } else {
+        const step = dz > 0 ? 1 : -1;
+        for (let gz = startGZ; gz !== endGZ + step; gz += step) {
+          positions.push({
+            x: startGX * cellSize,
+            z: gz * cellSize,
+            gx: startGX,
+            gz,
+            rotation: 0,
+            segmentType: null
+          });
+        }
+      }
+
+      if (positions.length <= 1) {
+        return positions;
+      }
+
+      // Fill any gaps between steps to avoid missing cells
+      const filled = [];
+      const seen = new Set();
+      const pushPos = (pos) => {
+        const key = `${pos.gx},${pos.gz}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        filled.push(pos);
+      };
+
+      pushPos(positions[0]);
+      for (let i = 1; i < positions.length; i++) {
+        const prev = filled[filled.length - 1];
+        const next = positions[i];
+        const stepX = Math.sign(next.gx - prev.gx);
+        const stepZ = Math.sign(next.gz - prev.gz);
+        let gx = prev.gx;
+        let gz = prev.gz;
+
+        while (gx !== next.gx || gz !== next.gz) {
+          gx += stepX;
+          gz += stepZ;
+          pushPos({
+            x: gx * cellSize,
+            z: gz * cellSize,
+            gx,
+            gz,
+            rotation: next.rotation,
+            segmentType: next.segmentType
+          });
+        }
+      }
+
+      return filled;
     }
 
     // Calculate wall rotation based on line direction (in degrees)
@@ -2166,12 +2672,12 @@ healerEditor.config            - Aktuelle Werte zeigen
       return Math.atan2(z2 - z1, x2 - x1) * 180 / Math.PI;
     }
 
-    // Create a single wall preview ghost
-    function createWallGhost() {
-      const ghost = createGuineaPigHouse('wall');
+    // Create a single wall preview ghost using new segment geometry
+    function createWallGhost(segmentType = 'post') {
+      const ghost = createWallSegment(segmentType);
       ghost.traverse((child) => {
         if (child.isMesh) {
-          child.material = child.material.clone();
+          child.material = safeCloneMaterial(child.material);
           child.material.transparent = true;
           child.material.opacity = 0.5;
           child.material.depthWrite = false;
@@ -2180,27 +2686,77 @@ healerEditor.config            - Aktuelle Werte zeigen
         }
       });
       ghost.visible = false;
+      ghost.userData.segmentType = segmentType;
       scene.add(ghost);
       return ghost;
     }
 
-    // Update wall preview with multiple ghost walls
+    // Calculate segment type for preview based on existing walls and preview positions
+    function getPreviewSegmentType(gx, gz, previewPositions) {
+      const wallGrid = wallGridRef.current;
+      const northCell = wallGrid?.getWall(gx, gz + 1);
+      const southCell = wallGrid?.getWall(gx, gz - 1);
+      const eastCell = wallGrid?.getWall(gx + 1, gz);
+      const westCell = wallGrid?.getWall(gx - 1, gz);
+      // Check existing walls in wallGrid (north = +Z, south = -Z per wallGrid.js)
+      const existingNeighbors = {
+        north: !!northCell && northCell.segmentType !== 'diagonal',
+        south: !!southCell && southCell.segmentType !== 'diagonal',
+        east: !!eastCell && eastCell.segmentType !== 'diagonal',
+        west: !!westCell && westCell.segmentType !== 'diagonal'
+      };
+
+      // Check preview positions for neighbors
+      previewPositions.forEach(pos => {
+        if (pos.gx === gx && pos.gz === gz + 1) existingNeighbors.north = true;
+        if (pos.gx === gx && pos.gz === gz - 1) existingNeighbors.south = true;
+        if (pos.gx === gx + 1 && pos.gz === gz) existingNeighbors.east = true;
+        if (pos.gx === gx - 1 && pos.gz === gz) existingNeighbors.west = true;
+      });
+
+      return wallGridRef.current?.determineSegmentType(existingNeighbors) || { type: 'post', rotation: 0 };
+    }
+
+    // Update wall preview with multiple ghost walls - grid-snapped with segment types
     function updateWallPreviewLine(x1, z1, x2, z2) {
       const positions = getWallPositionsAlongLine(x1, z1, x2, z2);
-
-      // Create more ghosts if needed
-      while (wallPreviewGhosts.length < positions.length) {
-        wallPreviewGhosts.push(createWallGhost());
+      const wallGrid = wallGridRef.current;
+      const previewPositions = [];
+      for (const pos of positions) {
+        const grid = wallGrid?.worldToGrid(pos.x, pos.z);
+        const hasWall = wallGrid?.getWall(grid.gx, grid.gz);
+        const isBlocked = wallGrid?.isBlockedCell(grid.gx, grid.gz);
+        const isValid = !!hasWall || (!isBlocked && checkWallPlacementValid(pos.x, pos.z, 1.5));
+        previewPositions.push({ ...pos, isValid });
+        if (isBlocked) break;
+        if (!isValid && !hasWall) break;
       }
 
-      // Update ghost positions and rotations
+      // Create more ghosts if needed
+      while (wallPreviewGhosts.length < previewPositions.length) {
+        wallPreviewGhosts.push(createWallGhost('post'));
+      }
+
+      // Update ghost positions and segment types
       for (let i = 0; i < wallPreviewGhosts.length; i++) {
-        if (i < positions.length) {
-          const pos = positions[i];
-          const isValid = checkPlacementValid(pos.x, pos.z, 1.5);
+        if (i < previewPositions.length) {
+          const pos = previewPositions[i];
+          const isValid = pos.isValid;
+
+          // Calculate segment type based on neighbors (existing + preview)
+          const segmentInfo = pos.segmentType
+            ? { type: pos.segmentType, rotation: pos.rotation }
+            : getPreviewSegmentType(pos.gx, pos.gz, previewPositions);
+
+          // Update geometry if segment type changed
+          const ghost = wallPreviewGhosts[i];
+          if (ghost.userData.segmentType !== segmentInfo.type) {
+            scene.remove(ghost);
+            wallPreviewGhosts[i] = createWallGhost(segmentInfo.type);
+          }
 
           wallPreviewGhosts[i].position.set(pos.x, 0, pos.z);
-          wallPreviewGhosts[i].rotation.y = pos.angle * Math.PI / 180;
+          wallPreviewGhosts[i].rotation.y = segmentInfo.rotation * Math.PI / 180;
           wallPreviewGhosts[i].visible = true;
 
           // Update color based on validity
@@ -2218,8 +2774,8 @@ healerEditor.config            - Aktuelle Werte zeigen
       }
 
       // Also update the line for visual connection
-      if (wallPreviewLine && positions.length >= 2) {
-        const points = positions.map(pos => new THREE.Vector3(pos.x, 0.5, pos.z));
+      if (wallPreviewLine && previewPositions.length >= 2) {
+        const points = previewPositions.map(pos => new THREE.Vector3(pos.x, 0.5, pos.z));
         wallPreviewLine.geometry.dispose();
         wallPreviewLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
         wallPreviewLine.visible = true;
@@ -2277,13 +2833,16 @@ healerEditor.config            - Aktuelle Werte zeigen
           const positions = getWallPositionsAlongLine(wallDragStartPos.x, wallDragStartPos.z, endX, endZ);
 
           let wallsPlaced = 0;
+          const wallGrid = wallGridRef.current;
           for (const wallPos of positions) {
-            // Each wall has its own rotation from the angle property
-            if (checkPlacementValid(wallPos.x, wallPos.z, 1.5)) { // Smaller collision check for walls
-              if (placeBuildingWithRotation(wallPos.x, wallPos.z, wallPos.angle)) {
-                wallsPlaced++;
-              }
-            }
+            const grid = wallGrid.worldToGrid(wallPos.x, wallPos.z);
+            if (wallGrid.isBlockedCell(grid.gx, grid.gz)) break;
+            if (wallGrid.getWall(grid.gx, grid.gz)) continue;
+            if (!checkWallPlacementValid(wallPos.x, wallPos.z, 1.5)) break;
+
+            // Each wall has its own rotation from the line orientation
+            if (!placeBuildingWithRotation(wallPos.x, wallPos.z, wallPos.rotation)) break;
+            wallsPlaced++;
           }
 
           if (wallsPlaced > 0) {
@@ -2328,7 +2887,8 @@ healerEditor.config            - Aktuelle Werte zeigen
       // R key to rotate building
       if (k === 'r' && gameRef.current.buildMode) {
         const currentRotation = gameRef.current.buildRotation || 0;
-        const newRotation = (currentRotation + 45) % 360;
+        const step = gameRef.current.buildMode === 'gate' ? 90 : 45;
+        const newRotation = (currentRotation + step) % 360;
         gameRef.current.buildRotation = newRotation;
         setBuildRotation(newRotation);
 
@@ -2352,6 +2912,96 @@ healerEditor.config            - Aktuelle Werte zeigen
       const type = gameRef.current.buildMode;
       if (!type) return false;
 
+      const wallGrid = wallGridRef.current;
+      const pathfinding = pathfindingRef.current;
+
+      // For walls/gates: snap to grid and use WallGrid system
+      if (isWallLikeType(type)) {
+        const grid = wallGrid.worldToGrid(x, z);
+        const snapped = wallGrid.gridToWorld(grid.gx, grid.gz);
+        x = snapped.x;
+        z = snapped.z;
+        const isGate = type === 'gate';
+        let wallRotation = Number.isFinite(rotation) ? rotation : 0;
+        if (isGate) {
+          wallRotation = getGateRotationForGrid(grid.gx, grid.gz, wallRotation);
+        }
+        const isDiagonal = !isGate && Math.abs(wallRotation % 90) === 45;
+
+        // Check if grid cell already has a wall
+        if (wallGrid.hasWall(grid.gx, grid.gz)) {
+          if (showMessage) {
+            setMessage('Platz belegt!');
+            setTimeout(() => setMessage(''), 1500);
+          }
+          return false;
+        }
+
+        // Check radial limits (6-14 units from center)
+        const dist = Math.sqrt(x * x + z * z);
+        if (dist < 6 || dist > 14) {
+          if (showMessage) {
+            setMessage('Zu nah oder zu weit vom Zentrum!');
+            setTimeout(() => setMessage(''), 1500);
+          }
+          return false;
+        }
+
+        const cost = getBuildingCost(type);
+        if (gameState.score < cost) {
+          if (showMessage) {
+            setMessage('Nicht genug Karotten!');
+            setTimeout(() => setMessage(''), 1500);
+          }
+          return false;
+        }
+
+        gameState.score -= cost;
+        setScore(gameState.score);
+
+        // Create initial wall building (will be updated with correct segment)
+        const building = createGuineaPigHouse(type);
+        building.position.set(x, 0, z);
+        building.userData.rotation = wallRotation;
+        building.userData.wallOrientation = isDiagonal ? 'diagonal' : 'orth';
+        scene.add(building);
+        buildingObjects.push(building);
+        soundSystem.build();
+
+        // Add to WallGrid - this connects with neighbors
+        const wallOptions = isDiagonal
+          ? { connect: false, segmentType: 'diagonal', rotation: wallRotation }
+          : (isGate ? { segmentType: 'gate', rotation: wallRotation, lockSegmentType: true, lockRotation: true } : undefined);
+        const cell = wallGrid.addWall(grid.gx, grid.gz, building, wallOptions);
+
+        // Update geometry based on neighbor connections
+        if (cell) {
+          if (isDiagonal) {
+            updateWallSegmentGeometry(building, 'diagonal', wallRotation);
+          } else {
+            const segmentType = isGate ? 'gate' : cell.segmentType;
+            const segmentRotation = isGate ? wallRotation : cell.rotation;
+            updateWallSegmentGeometry(building, segmentType, segmentRotation);
+
+            // Update all affected neighbor geometries
+            Object.values(cell.neighbors).forEach(neighbor => {
+              if (neighbor && neighbor.building) {
+                const { type: segType, rotation: segRot } = wallGrid.updateSegmentType(neighbor);
+                updateWallSegmentGeometry(neighbor.building, segType, segRot);
+              }
+            });
+          }
+        }
+
+        // Clear pathfinding cache since walls changed
+        pathfinding.clearCache();
+
+        setBuildings([...buildingObjects.map(b => ({ type: b.userData.type, x: b.position.x, z: b.position.z, rotation: b.userData.rotation || 0 }))]);
+
+        return true;
+      }
+
+      // Regular building placement (non-walls)
       const cost = getBuildingCost(type);
       if (gameState.score < cost) {
         if (showMessage) {
@@ -2383,16 +3033,34 @@ healerEditor.config            - Aktuelle Werte zeigen
       building.userData.rotation = rotation;
       scene.add(building);
       buildingObjects.push(building);
+      soundSystem.build();
+      if (wallGrid && !isWallLikeType(type)) {
+        const grid = wallGrid.worldToGrid(x, z);
+        wallGrid.setBlocked(grid.gx, grid.gz, true);
+        building.userData.blockedCell = { gx: grid.gx, gz: grid.gz };
+        pathfinding.clearCache();
+      }
       setBuildings([...buildingObjects.map(b => ({ type: b.userData.type, x: b.position.x, z: b.position.z, rotation: b.userData.rotation || 0 }))]);
 
       if (showMessage) {
-        setMessage(`${type === 'collectorHut' ? 'Sammler-Hütte' : type === 'heroHut' ? 'Helden-Hütte' : type === 'tower' ? 'Wachturm' : 'Mauer'} gebaut!`);
+        const buildingNames = {
+          collectorHut: 'Sammler-Hütte',
+          heroHut: 'Helden-Hütte',
+          beaverHut: 'Biber-Hütte',
+          tower: 'Wachturm',
+          wall: 'Mauer',
+          gate: 'Tor'
+        };
+        setMessage(`${buildingNames[type] || type} gebaut!`);
         setTimeout(() => setMessage(''), 1500);
       }
 
-      // Spawn initial collector
+      // Spawn initial units
       if (type === 'collectorHut') {
-        spawnCollector(x, z);
+        spawnCollector(x, z, building);
+      }
+      if (type === 'beaverHut') {
+        spawnBeaver(x, z, building);
       }
 
       return true;
@@ -2403,11 +3071,12 @@ healerEditor.config            - Aktuelle Werte zeigen
       return placeBuildingWithRotation(x, z, gameRef.current.buildRotation || 0);
     }
 
-    function spawnCollector(x, z) {
+    function spawnCollector(x, z, homeBuilding = null) {
       const collector = createGuineaPig('collector', false, 0.9);
       collector.position.set(x + 2, 0, z);
       collector.userData.homePos = new THREE.Vector3(x, 0, z);
       collector.userData.state = 'seeking';
+      collector.userData.homeBuilding = homeBuilding || findHomeBuilding('collectorHut', collector.userData.homePos);
       scene.add(collector);
       collectors.push(collector);
     }
@@ -2433,6 +3102,29 @@ healerEditor.config            - Aktuelle Werte zeigen
       setTimeout(() => setMessage(''), 2000);
     }
 
+    function spawnBeaver(x, z, homeBuilding = null) {
+      const beaver = createGuineaPig('collector', false, 0.85); // Use collector model for now
+      beaver.position.set(x + 2, 0, z);
+      beaver.userData.type = 'beaver';
+      beaver.userData.state = 'collecting';
+      beaver.userData.speed = 0.045;
+      beaver.userData.homePos = new THREE.Vector3(x, 0, z);
+      beaver.userData.homeBuilding = homeBuilding || findHomeBuilding('beaverHut', beaver.userData.homePos);
+      beaver.userData.carryingWood = 0;
+      beaver.userData.maxCarry = 2;
+      beaver.userData.targetTree = null;
+      beaver.userData.targetBuilding = null;
+      // Make beaver slightly brown-tinted
+      beaver.traverse((child) => {
+        if (child.isMesh && child.material) {
+          child.material = safeCloneMaterial(child.material);
+          child.material.color.setHex(0x8B4513);
+        }
+      });
+      scene.add(beaver);
+      beavers.push(beaver);
+    }
+
     // Expose to React
     window.gameBuild = (type) => {
       gameRef.current.buildMode = type;
@@ -2456,7 +3148,8 @@ healerEditor.config            - Aktuelle Werte zeigen
     window.gameRotateBuilding = () => {
       if (gameRef.current.buildMode) {
         const currentRotation = gameRef.current.buildRotation || 0;
-        const newRotation = (currentRotation + 45) % 360;
+        const step = gameRef.current.buildMode === 'gate' ? 90 : 45;
+        const newRotation = (currentRotation + step) % 360;
         gameRef.current.buildRotation = newRotation;
         setBuildRotation(newRotation);
         if (previewGhost) {
@@ -2532,7 +3225,15 @@ healerEditor.config            - Aktuelle Werte zeigen
       lights.setNightMode();
       clouds.setVisible(false);
 
-      partners.forEach(p => p.visible = false);
+      player.userData.lastDayPos = player.position.clone();
+      player.userData.inCastle = false;
+      player.visible = true;
+
+      partners.forEach(p => {
+        p.userData.lastDayPos = p.position.clone();
+        p.userData.inCastle = false;
+        p.visible = true;
+      });
       changeWeather();
       startWave(gameState.wave);
     }
@@ -2554,7 +3255,42 @@ healerEditor.config            - Aktuelle Werte zeigen
       lights.setDayMode();
       clouds.setVisible(true);
 
-      partners.forEach(p => p.visible = true);
+      player.visible = true;
+      if (player.userData.inCastle && player.userData.lastDayPos) {
+        player.position.copy(player.userData.lastDayPos);
+      }
+      player.userData.inCastle = false;
+
+      partners.forEach(p => {
+        p.visible = true;
+        if (p.userData.inCastle && p.userData.lastDayPos) {
+          p.position.copy(p.userData.lastDayPos);
+        }
+        p.userData.inCastle = false;
+        if (p.userData.targetPos) {
+          p.userData.targetPos.copy(p.position);
+        }
+      });
+
+      collectors.forEach(collector => {
+        collector.visible = true;
+        collector.userData.inHut = false;
+        collector.userData.state = 'seeking';
+        if (!collector.userData.homeBuilding) {
+          collector.userData.homeBuilding = findHomeBuilding('collectorHut', collector.userData.homePos);
+        }
+      });
+
+      beavers.forEach(beaver => {
+        beaver.visible = true;
+        beaver.userData.inHut = false;
+        beaver.userData.state = 'collecting';
+        beaver.userData.targetBuilding = null;
+        beaver.userData.targetTree = null;
+        if (!beaver.userData.homeBuilding) {
+          beaver.userData.homeBuilding = findHomeBuilding('beaverHut', beaver.userData.homePos);
+        }
+      });
 
       // Regenerate if fortress skill
       if (getSkillEffect('fortress')) {
@@ -2596,7 +3332,11 @@ healerEditor.config            - Aktuelle Werte zeigen
       time += dt;
 
       if (gameOver || victory) {
-        renderer.render(scene, camera);
+        try {
+          renderer.render(scene, camera);
+        } catch (e) {
+          console.error('[Render] Error in gameOver/victory render:', e.message);
+        }
         return;
       }
 
@@ -2646,6 +3386,87 @@ healerEditor.config            - Aktuelle Werte zeigen
         setBaseHealth(Math.floor(gameState.baseHealth));
       }
 
+      // ===== POISON DAMAGE OVER TIME =====
+      // Base poison tick
+      if (gameState.basePoisoned && gameState.basePoisonDuration > 0) {
+        gameState.basePoisonTickTimer += dt;
+        gameState.basePoisonDuration -= dt;
+
+        // Tick damage every 1 second
+        if (gameState.basePoisonTickTimer >= 1) {
+          gameState.basePoisonTickTimer = 0;
+          gameState.baseHealth -= gameState.basePoisonDamage;
+          setBaseHealth(Math.max(0, Math.floor(gameState.baseHealth)));
+
+          // Green poison particles on base
+          const poisonEffect = createExplosion(new THREE.Vector3(0, 0.5, 0), 0x00FF00);
+          poisonEffect.forEach(p => scene.add(p));
+          effects.push(...poisonEffect);
+
+          if (gameState.baseHealth <= 0) {
+            const earnedPoints = Math.floor(gameState.score / 10) + gameState.wave * 5;
+            setMeta(prev => ({
+              ...prev,
+              skillPoints: prev.skillPoints + earnedPoints,
+              bestWave: Math.max(prev.bestWave, gameState.wave),
+              totalGames: prev.totalGames + 1,
+            }));
+            setGameOver(true);
+            setMessage(`💀 GAME OVER (Gift) - +${earnedPoints} SP`);
+          }
+        }
+
+        // Clear poison when duration ends
+        if (gameState.basePoisonDuration <= 0) {
+          gameState.basePoisoned = false;
+          setMessage(''); // Clear poison message
+        }
+      }
+
+      // Building poison tick
+      buildingObjects.forEach(building => {
+        if (building.userData.poisoned && building.userData.poisonDuration > 0) {
+          building.userData.poisonTickTimer += dt;
+          building.userData.poisonDuration -= dt;
+
+          if (building.userData.poisonTickTimer >= 1) {
+            building.userData.poisonTickTimer = 0;
+            building.userData.health -= building.userData.poisonDamage;
+
+            // Green poison effect
+            const poisonEffect = createExplosion(building.position, 0x00FF00);
+            poisonEffect.forEach(p => scene.add(p));
+            effects.push(...poisonEffect);
+          }
+
+          if (building.userData.poisonDuration <= 0) {
+            building.userData.poisoned = false;
+          }
+        }
+      });
+
+      // Defender poison tick
+      defenders.forEach(defender => {
+        if (defender.userData.poisoned && defender.userData.poisonDuration > 0) {
+          defender.userData.poisonTickTimer += dt;
+          defender.userData.poisonDuration -= dt;
+
+          if (defender.userData.poisonTickTimer >= 1) {
+            defender.userData.poisonTickTimer = 0;
+            defender.userData.health -= defender.userData.poisonDamage;
+
+            // Green poison effect
+            const poisonEffect = createExplosion(defender.position, 0x00FF00);
+            poisonEffect.forEach(p => scene.add(p));
+            effects.push(...poisonEffect);
+          }
+
+          if (defender.userData.poisonDuration <= 0) {
+            defender.userData.poisoned = false;
+          }
+        }
+      });
+
       // ===== DAY PHASE =====
       if (gameState.phase === 'day') {
         gameState.dayTimer += dt;
@@ -2663,7 +3484,11 @@ healerEditor.config            - Aktuelle Werte zeigen
         const acceleration = 0.008;
         const friction = 0.88;
         if (gameState.speedBoostTimer > 0) maxSpeed *= 1.5;
-        if (gameState.weather === 'windy') maxSpeed *= 1.2;
+        // Weather Master enhances windy speed bonus
+        if (gameState.weather === 'windy') {
+          const weatherBonus = getSkillEffect('weatherMaster');
+          maxSpeed *= weatherBonus >= 1 ? 1.35 : 1.2; // 35% with Weather Master, 20% without
+        }
 
         let inputX = joystick.moveX;
         let inputZ = joystick.moveZ;
@@ -2729,6 +3554,12 @@ healerEditor.config            - Aktuelle Werte zeigen
         while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
         player.rotation.y += rotDiff * 0.15;
 
+        resolveUnitBuildingCollisions(player, {
+          unitRadius: UNIT_COLLISION_RADIUS.player,
+          allowBuilding: (building) => building.userData.type === 'gate',
+          ignoreCastle: false,
+        });
+
         // Partner movement
         partners.forEach((p, i) => {
           if (!p.visible) return;
@@ -2764,6 +3595,12 @@ healerEditor.config            - Aktuelle Werte zeigen
               data.heartIndicator.position.y = 1.2 + Math.sin(time * 3) * 0.1;
             }
           }
+
+          resolveUnitBuildingCollisions(p, {
+            unitRadius: UNIT_COLLISION_RADIUS.partner,
+            allowBuilding: (building) => building.userData.type === 'gate',
+            ignoreCastle: false,
+          });
         });
 
         // Carrot collection - with magnet if skill unlocked
@@ -2797,19 +3634,22 @@ healerEditor.config            - Aktuelle Werte zeigen
             setComboTimer(2);
             
             const comboMultiplier = 1 + Math.min(gameState.combo, 10) * 0.1;
-            const value = Math.floor(carrot.userData.value * comboMultiplier);
+            const diffMod = DIFFICULTY_MODS[difficulty] || DIFFICULTY_MODS.normal;
+            const value = Math.floor(carrot.userData.value * comboMultiplier * diffMod.carrotValue);
             gameState.score += value;
             setScore(gameState.score);
-            
+            soundSystem.collect();
+
             // Special effects
             if (carrot.userData.type === 'blue') {
               gameState.speedBoostTimer = 5;
               setMessage('⚡ Speed Boost!');
               setTimeout(() => setMessage(''), 1500);
             }
-            
+
             if (gameState.combo >= 5) {
               effects.push(...createComboText(carrot.position, gameState.combo));
+              soundSystem.combo(gameState.combo);
             }
             
             // Animate removal
@@ -2832,6 +3672,7 @@ healerEditor.config            - Aktuelle Werte zeigen
         // Collector AI
         collectors.forEach(collector => {
           const data = collector.userData;
+          if (!collector.visible) return;
           
           if (data.state === 'seeking') {
             // Find nearest carrot
@@ -2891,6 +3732,152 @@ healerEditor.config            - Aktuelle Werte zeigen
           }
           
           collector.rotation.z = Math.sin(time * 6) * 0.05;
+
+          resolveUnitBuildingCollisions(collector, {
+            unitRadius: UNIT_COLLISION_RADIUS.collector,
+            allowBuilding: (building) => building.userData.type === 'gate' || building === data.homeBuilding,
+            ignoreCastle: false,
+          });
+        });
+
+        // Beaver AI
+        beavers.forEach(beaver => {
+          const data = beaver.userData;
+          if (!beaver.visible) return;
+
+          // Find damaged buildings (sorted by lowest HP%)
+          const damagedBuildings = buildingObjects
+            .filter(b => b.userData.health < b.userData.maxHealth && b.userData.health > 0)
+            .sort((a, b) => {
+              const aPercent = a.userData.health / a.userData.maxHealth;
+              const bPercent = b.userData.health / b.userData.maxHealth;
+              return aPercent - bPercent;
+            });
+
+          // State transitions
+          if (damagedBuildings.length > 0 && data.carryingWood > 0) {
+            data.state = 'repairing';
+            data.targetBuilding = damagedBuildings[0];
+          } else if (damagedBuildings.length === 0 && data.state === 'repairing') {
+            data.state = 'collecting';
+            data.targetBuilding = null;
+          }
+
+          if (data.state === 'collecting') {
+            // Check if full
+            if (data.carryingWood >= data.maxCarry) {
+              if (damagedBuildings.length > 0) {
+                data.state = 'repairing';
+                data.targetBuilding = damagedBuildings[0];
+              } else {
+                data.state = 'returning';
+              }
+            } else {
+              // Find nearest tree with wood
+              const trees = landscapeSystem.getAllResourceTrees();
+              let nearestTree = null;
+              let nearestDist = Infinity;
+              trees.forEach(tree => {
+                const dx = beaver.position.x - tree.position.x;
+                const dz = beaver.position.z - tree.position.z;
+                const d = Math.sqrt(dx * dx + dz * dz);
+                if (d < nearestDist) {
+                  nearestDist = d;
+                  nearestTree = tree;
+                }
+              });
+
+              if (nearestTree) {
+                if (nearestDist > 2) {
+                  // Move toward tree
+                  const dx = nearestTree.position.x - beaver.position.x;
+                  const dz = nearestTree.position.z - beaver.position.z;
+                  beaver.position.x += (dx / nearestDist) * data.speed;
+                  beaver.position.z += (dz / nearestDist) * data.speed;
+                  beaver.rotation.y = Math.atan2(-dz, dx);
+                } else {
+                  // Harvest wood
+                  if (nearestTree.userData.woodAmount > 0) {
+                    nearestTree.userData.woodAmount -= 1;
+                    data.carryingWood += 1;
+                    nearestTree.scale.multiplyScalar(0.92); // Visual shrink
+                  }
+                }
+              } else if (data.carryingWood > 0) {
+                // No trees, return home if carrying
+                data.state = 'returning';
+              }
+            }
+          } else if (data.state === 'repairing') {
+            const target = data.targetBuilding;
+
+            if (!target || target.userData.health >= target.userData.maxHealth || target.userData.health <= 0) {
+              data.state = 'collecting';
+              data.targetBuilding = null;
+            } else {
+              const dx = target.position.x - beaver.position.x;
+              const dz = target.position.z - beaver.position.z;
+              const d = Math.sqrt(dx * dx + dz * dz);
+
+              if (d > 2.5) {
+                beaver.position.x += (dx / d) * data.speed;
+                beaver.position.z += (dz / d) * data.speed;
+                beaver.rotation.y = Math.atan2(-dz, dx);
+              } else if (data.carryingWood > 0) {
+                // Repair: 25 HP per wood
+                const repairAmount = 25;
+                target.userData.health = Math.min(target.userData.maxHealth, target.userData.health + repairAmount);
+                data.carryingWood -= 1;
+
+                // Visual feedback - brown particles
+                for (let i = 0; i < 3; i++) {
+                  const spark = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.1),
+                    new THREE.MeshBasicMaterial({ color: 0x8B4513 })
+                  );
+                  spark.position.copy(target.position);
+                  spark.position.y += 1;
+                  spark.userData = { type: 'effect', life: 0.5, velocity: new THREE.Vector3((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2) };
+                  scene.add(spark);
+                  effects.push(spark);
+                }
+
+                if (data.carryingWood <= 0) {
+                  data.state = 'collecting';
+                  data.targetBuilding = null;
+                }
+              }
+            }
+          } else if (data.state === 'returning') {
+            const dx = data.homePos.x - beaver.position.x;
+            const dz = data.homePos.z - beaver.position.z;
+            const d = Math.sqrt(dx * dx + dz * dz);
+
+            if (d > 2) {
+              beaver.position.x += (dx / d) * data.speed;
+              beaver.position.z += (dz / d) * data.speed;
+              beaver.rotation.y = Math.atan2(-dz, dx);
+            } else {
+              // Deposit wood
+              gameState.wood = (gameState.wood || 0) + data.carryingWood;
+              setWood(gameState.wood);
+              data.carryingWood = 0;
+              data.state = 'collecting';
+            }
+          }
+
+          // Animation wobble
+          beaver.rotation.z = Math.sin(time * 5) * 0.04;
+
+          resolveUnitBuildingCollisions(beaver, {
+            unitRadius: UNIT_COLLISION_RADIUS.beaver,
+            allowBuilding: (building) => (
+              building.userData.type === 'gate' ||
+              building === data.homeBuilding ||
+              building === data.targetBuilding
+            ),
+            ignoreCastle: false,
+          });
         });
 
         // Building spawns
@@ -2900,16 +3887,39 @@ healerEditor.config            - Aktuelle Werte zeigen
           
           const heroSpawnTime = 20 - getSkillEffect('heroSpawnRate');
           
-          if (data.type === 'collectorHut' && data.spawnTimer >= 30) {
+          if (data.type === 'collectorHut' && data.spawnTimer >= 30 && gameState.phase === 'day') {
             data.spawnTimer = 0;
             if (collectors.filter(c => c.userData.homePos.equals(new THREE.Vector3(building.position.x, 0, building.position.z))).length < 3) {
-              spawnCollector(building.position.x, building.position.z);
+              spawnCollector(building.position.x, building.position.z, building);
             }
           }
           
           if (data.type === 'heroHut' && data.spawnTimer >= heroSpawnTime) {
             data.spawnTimer = 0;
             spawnHero(building.position.x, building.position.z);
+          }
+
+          if (data.type === 'beaverHut' && data.spawnTimer >= 25 && gameState.phase === 'day') {
+            data.spawnTimer = 0;
+            const homeBeavers = beavers.filter(b =>
+              b.userData.homePos && b.userData.homePos.distanceTo(building.position) < 1
+            );
+            if (homeBeavers.length < 2) {
+              spawnBeaver(building.position.x, building.position.z, building);
+            }
+          }
+        });
+
+        // Tree wood regeneration
+        landscapeSystem.getAllTrees().forEach(tree => {
+          if (tree.userData.woodAmount < tree.userData.maxWood) {
+            tree.userData.regenTimer = (tree.userData.regenTimer || 0) + dt;
+            if (tree.userData.regenTimer >= 20) { // 20 seconds to regen 1 wood
+              tree.userData.woodAmount += 1;
+              tree.userData.regenTimer = 0;
+              // Visual feedback - tree grows back slightly
+              tree.scale.multiplyScalar(1.03);
+            }
           }
         });
 
@@ -2921,9 +3931,92 @@ healerEditor.config            - Aktuelle Werte zeigen
 
       // ===== NIGHT PHASE =====
       if (gameState.phase === 'night') {
+        const castlePos = mainBurrow.position;
+
+        if (!player.userData.inCastle) {
+          player.visible = true;
+          moveUnitToward(player, castlePos, 0.08, 1.2);
+          resolveUnitBuildingCollisions(player, {
+            unitRadius: UNIT_COLLISION_RADIUS.player,
+            allowBuilding: (building) => building.userData.type === 'gate',
+            ignoreCastle: true,
+          });
+          const d = player.position.distanceTo(castlePos);
+          if (d <= 1.4) {
+            player.visible = false;
+            player.userData.inCastle = true;
+            player.userData.velocityX = 0;
+            player.userData.velocityZ = 0;
+          }
+        }
+
+        partners.forEach(p => {
+          if (p.userData.inCastle) return;
+          p.visible = true;
+          moveUnitToward(p, castlePos, 0.06, 1.2);
+          resolveUnitBuildingCollisions(p, {
+            unitRadius: UNIT_COLLISION_RADIUS.partner,
+            allowBuilding: (building) => building.userData.type === 'gate',
+            ignoreCastle: true,
+          });
+          const d = p.position.distanceTo(castlePos);
+          if (d <= 1.4) {
+            p.visible = false;
+            p.userData.inCastle = true;
+          }
+        });
+
+        collectors.forEach(collector => {
+          const data = collector.userData;
+          if (data.inHut) {
+            collector.visible = false;
+            return;
+          }
+          collector.visible = true;
+          const d = moveUnitToward(collector, data.homePos, data.speed, 1.2);
+          resolveUnitBuildingCollisions(collector, {
+            unitRadius: UNIT_COLLISION_RADIUS.collector,
+            allowBuilding: (building) => building.userData.type === 'gate' || building === data.homeBuilding,
+            ignoreCastle: false,
+          });
+          if (d <= 1.4) {
+            gameState.score += data.carryingCarrots || 0;
+            setScore(gameState.score);
+            data.carryingCarrots = 0;
+            data.state = 'seeking';
+            data.inHut = true;
+            collector.visible = false;
+          }
+        });
+
+        beavers.forEach(beaver => {
+          const data = beaver.userData;
+          if (data.inHut) {
+            beaver.visible = false;
+            return;
+          }
+          beaver.visible = true;
+          const d = moveUnitToward(beaver, data.homePos, data.speed, 1.2);
+          resolveUnitBuildingCollisions(beaver, {
+            unitRadius: UNIT_COLLISION_RADIUS.beaver,
+            allowBuilding: (building) => building.userData.type === 'gate' || building === data.homeBuilding,
+            ignoreCastle: false,
+          });
+          if (d <= 1.4) {
+            gameState.wood = (gameState.wood || 0) + (data.carryingWood || 0);
+            setWood(gameState.wood);
+            data.carryingWood = 0;
+            data.state = 'collecting';
+            data.inHut = true;
+            beaver.visible = false;
+          }
+        });
+
         const waveConfig = WAVES[Math.min(gameState.wave, WAVES.length - 1)];
+        const diffMod = DIFFICULTY_MODS[difficulty] || DIFFICULTY_MODS.normal;
+        const adjustedDelay = waveConfig.delay * diffMod.spawnRate; // Faster spawns on hard
         spawnTimer += dt;
-        if (spawnTimer >= waveConfig.delay && enemiesToSpawn.length > 0) {
+        if (spawnTimer >= adjustedDelay && enemiesToSpawn.length > 0) {
           spawnTimer = 0;
           spawnEnemy();
         }
@@ -2931,7 +4024,8 @@ healerEditor.config            - Aktuelle Werte zeigen
         // Enemy AI
         enemies.forEach(enemy => {
           const data = enemy.userData;
-          
+
+          // Handle status effects
           if (data.confused) {
             data.confuseTime -= dt;
             if (data.confuseTime <= 0) data.confused = false;
@@ -2941,46 +4035,15 @@ healerEditor.config            - Aktuelle Werte zeigen
             if (data.slowTime <= 0) data.slowed = false;
           }
 
-          // Find target (prioritize buildings, then base)
+          // Decay threat over time
+          decayThreat(enemy, dt);
+
+          // Find target using the new Threat/Aggro system
           let targetX = 0, targetZ = 0;
-          let targetBuilding = data.targetBuilding;
 
-          if (!data.confused) {
-            // Only search for new target if we don't have one or current is destroyed
-            const needNewTarget = !targetBuilding ||
-              targetBuilding.userData.health <= 0 ||
-              !buildingObjects.includes(targetBuilding);
-
-            if (needNewTarget) {
-              targetBuilding = null;
-              data.confusedTarget = null; // Reset confused target when getting new target
-              // Snakes always target buildings, others have 30% chance (decided once per enemy)
-              if (data.buildingTargeter === undefined) {
-                data.buildingTargeter = data.type === 'snake' || Math.random() < 0.3;
-              }
-
-              if (data.buildingTargeter) {
-                let nearestBuildingDist = Infinity;
-                buildingObjects.forEach(b => {
-                  if (b.userData.health <= 0) return;
-                  const dx = enemy.position.x - b.position.x;
-                  const dz = enemy.position.z - b.position.z;
-                  const d = Math.sqrt(dx*dx + dz*dz);
-                  if (d < nearestBuildingDist && d < 25) {
-                    nearestBuildingDist = d;
-                    targetBuilding = b;
-                  }
-                });
-              }
-              data.targetBuilding = targetBuilding;
-            }
-
-            if (targetBuilding) {
-              targetX = targetBuilding.position.x;
-              targetZ = targetBuilding.position.z;
-            }
-          } else {
-            // When confused, use cached random position
+          if (data.confused) {
+            // When confused, clear threat and use cached random position
+            clearThreat(enemy);
             if (!data.confusedTarget) {
               data.confusedTarget = {
                 x: (Math.random() - 0.5) * 30,
@@ -2989,6 +4052,44 @@ healerEditor.config            - Aktuelle Werte zeigen
             }
             targetX = data.confusedTarget.x;
             targetZ = data.confusedTarget.z;
+          } else {
+            // Initialize buildingTargeter once per enemy
+            if (data.buildingTargeter === undefined) {
+              data.buildingTargeter = data.type === 'snake' || Math.random() < 0.3;
+            }
+
+            // Use threat-based target selection
+            const result = selectTarget(enemy, defenders, buildingObjects);
+
+            // Check if target changed
+            if (result.target !== data.currentTarget) {
+              // Switching to defender = retaliation
+              if (result.type === 'defender' && data.targetType !== 'defender') {
+                data.originalTarget = data.targetBuilding;
+                data.isRetaliating = true;
+              }
+              // Returning from retaliation
+              if (result.type !== 'defender' && data.isRetaliating) {
+                data.isRetaliating = false;
+              }
+
+              data.currentTarget = result.target;
+              data.targetType = result.type;
+              data.targetBuilding = result.type === 'building' ? result.target : null;
+              data.path = null;
+              data.pathInvalid = true;
+              data.confusedTarget = null;
+            }
+
+            // Set target position based on target type
+            if (data.targetType === 'defender' && data.currentTarget?.userData?.health > 0) {
+              targetX = data.currentTarget.position.x;
+              targetZ = data.currentTarget.position.z;
+            } else if (data.targetBuilding?.userData?.health > 0) {
+              targetX = data.targetBuilding.position.x;
+              targetZ = data.targetBuilding.position.z;
+            }
+            // else targetX/Z stay at 0,0 (base)
           }
 
           const dx = targetX - enemy.position.x;
@@ -2997,34 +4098,124 @@ healerEditor.config            - Aktuelle Werte zeigen
 
           let speed = data.speed;
           if (data.slowed) speed *= 0.35;
-          if (gameState.weather === 'rainy') speed *= 0.8;
+          // Weather Master enhances rainy slow effect
+          if (gameState.weather === 'rainy') {
+            const weatherBonus = getSkillEffect('weatherMaster');
+            speed *= weatherBonus >= 1 ? 0.65 : 0.8; // 35% slow with Weather Master, 20% without
+          }
 
-          const attackDist = data.targetBuilding ? 2.5 : 5;
+          // Attack distance depends on target type
+          const attackDist = data.targetType === 'defender' ? 1.8 :
+                            data.targetBuilding ? 2.5 : 5;
           
           if (dist > attackDist) {
-            // Check wall collision
-            let blocked = false;
-            buildingObjects.forEach(b => {
-              if (b.userData.type !== 'wall' || b.userData.health <= 0) return;
-              const wdx = enemy.position.x - b.position.x;
-              const wdz = enemy.position.z - b.position.z;
-              if (Math.sqrt(wdx*wdx + wdz*wdz) < 2) {
-                blocked = true;
-                data.targetBuilding = b;
+            // A* Pathfinding for intelligent wall navigation
+            const pathfinding = pathfindingRef.current;
+            const wallGrid = wallGridRef.current;
+
+            // Check if direct path is clear using line of sight
+            const hasDirectPath = pathfinding.hasLineOfSight(
+              enemy.position.x, enemy.position.z, targetX, targetZ
+            );
+
+            let moveX = 0, moveZ = 0;
+
+            if (hasDirectPath) {
+              // Direct movement - no walls in the way
+              moveX = (dx / dist) * speed;
+              moveZ = (dz / dist) * speed;
+              data.path = null; // Clear any existing path
+            } else {
+              // Need pathfinding - calculate or use cached path
+              if (!data.path || data.pathAge > 60 || data.pathInvalid) {
+                data.path = pathfinding.findSmoothPath(
+                  enemy.position.x, enemy.position.z, targetX, targetZ
+                );
+                data.pathIndex = 0;
+                data.pathAge = 0;
+                data.pathInvalid = false;
               }
-            });
-            
-            if (!blocked) {
-              enemy.position.x += (dx / dist) * speed;
-              enemy.position.z += (dz / dist) * speed;
+              data.pathAge = (data.pathAge || 0) + 1;
+
+              if (data.path && data.path.length > 0) {
+                // Follow the path
+                let waypoint = data.path[data.pathIndex];
+
+                // Skip waypoints that are behind us
+                while (data.pathIndex < data.path.length - 1) {
+                  const wpDx = waypoint.x - enemy.position.x;
+                  const wpDz = waypoint.z - enemy.position.z;
+                  const wpDist = Math.sqrt(wpDx * wpDx + wpDz * wpDz);
+
+                  if (wpDist < 1.0) {
+                    // Reached waypoint, move to next
+                    data.pathIndex++;
+                    waypoint = data.path[data.pathIndex];
+                  } else {
+                    break;
+                  }
+                }
+
+                // Move towards current waypoint
+                const wpDx = waypoint.x - enemy.position.x;
+                const wpDz = waypoint.z - enemy.position.z;
+                const wpDist = Math.sqrt(wpDx * wpDx + wpDz * wpDz);
+
+                if (wpDist > 0.1) {
+                  moveX = (wpDx / wpDist) * speed;
+                  moveZ = (wpDz / wpDist) * speed;
+                }
+
+                // Check if we've reached end of path
+                if (data.pathIndex >= data.path.length - 1 && wpDist < 1.0) {
+                  data.path = null;
+                }
+              } else {
+                // No path found - find nearest wall to attack
+                let nearestWall = null;
+                let nearestWallDist = Infinity;
+                buildingObjects.forEach(b => {
+                  if (!isWallLikeType(b.userData.type) || b.userData.health <= 0) return;
+                  const wdx = enemy.position.x - b.position.x;
+                  const wdz = enemy.position.z - b.position.z;
+                  const wDist = Math.sqrt(wdx * wdx + wdz * wdz);
+                  if (wDist < nearestWallDist) {
+                    nearestWallDist = wDist;
+                    nearestWall = b;
+                  }
+                });
+
+                if (nearestWall && nearestWallDist < 3) {
+                  // Attack the blocking wall
+                  data.targetBuilding = nearestWall;
+                } else if (nearestWall) {
+                  // Move towards nearest wall
+                  const wdx = nearestWall.position.x - enemy.position.x;
+                  const wdz = nearestWall.position.z - enemy.position.z;
+                  moveX = (wdx / nearestWallDist) * speed;
+                  moveZ = (wdz / nearestWallDist) * speed;
+                }
+              }
             }
+
+            // Apply movement
+            if (moveX !== 0 || moveZ !== 0) {
+              enemy.position.x += moveX;
+              enemy.position.z += moveZ;
+            }
+
+            resolveUnitBuildingCollisions(enemy, {
+              unitRadius: UNIT_COLLISION_RADIUS.enemy,
+              ignoreCastle: false,
+            });
+
             // Smooth rotation interpolation to prevent jittering
-            const targetRot = Math.atan2(-dz, dx);
+            const targetRot = Math.atan2(-(moveZ || dz), (moveX || dx));
             let rotDiff = targetRot - enemy.rotation.y;
             while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
             while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
             enemy.rotation.y += rotDiff * 0.15;
-            
+
             // Animations
             if (data.type === 'fox' || data.type === 'boss_fox') {
               enemy.rotation.z = Math.sin(time * 6) * 0.04;
@@ -3042,18 +4233,110 @@ healerEditor.config            - Aktuelle Werte zeigen
             if (data.attackCooldown <= 0) {
               data.attackCooldown = data.isBoss ? 1 : 1.5;
 
-              if (data.targetBuilding && data.targetBuilding.userData.health > 0) {
+              // NEW: Attack defender if targeting one
+              if (data.targetType === 'defender' && data.currentTarget?.userData?.health > 0) {
+                data.currentTarget.userData.health -= data.damage;
+                effects.push(...createExplosion(data.currentTarget.position, 0xFF4444));
+
+                // Snake poison - apply DoT to defender
+                if (data.canPoison && data.currentTarget.userData.health > 0) {
+                  data.currentTarget.userData.poisoned = true;
+                  data.currentTarget.userData.poisonDamage = 3; // 3 damage per tick
+                  data.currentTarget.userData.poisonDuration = 5; // 5 seconds
+                  data.currentTarget.userData.poisonTickTimer = 0;
+                  effects.push(...createExplosion(data.currentTarget.position, 0x00FF00)); // Green poison effect
+                }
+
+                if (data.currentTarget.userData.health <= 0) {
+                  // Defender defeated - return to original objective
+                  effects.push(...createExplosion(data.currentTarget.position, 0x8B0000));
+                  scene.remove(data.currentTarget);
+                  const defIdx = defenders.indexOf(data.currentTarget);
+                  if (defIdx > -1) defenders.splice(defIdx, 1);
+
+                  // Return to original target
+                  data.currentTarget = null;
+                  data.targetType = data.originalTarget ? 'building' : 'base';
+                  data.targetBuilding = data.originalTarget;
+                  data.isRetaliating = false;
+                  data.path = null;
+                  data.pathInvalid = true;
+                }
+              } else if (data.targetBuilding && data.targetBuilding.userData.health > 0) {
                 data.targetBuilding.userData.health -= data.damage;
+
+                // Snake poison - apply DoT to building
+                if (data.canPoison && data.targetBuilding.userData.health > 0) {
+                  data.targetBuilding.userData.poisoned = true;
+                  data.targetBuilding.userData.poisonDamage = 5; // 5 damage per tick to buildings
+                  data.targetBuilding.userData.poisonDuration = 4; // 4 seconds
+                  data.targetBuilding.userData.poisonTickTimer = 0;
+                }
+
                 if (data.targetBuilding.userData.health <= 0) {
                   effects.push(...createExplosion(data.targetBuilding.position, 0x8B4513));
+
+                  // If it's a wall, update the grid system
+                  if (isWallLikeType(data.targetBuilding.userData.type) && wallGridRef.current) {
+                    const pos = data.targetBuilding.position;
+                    const grid = wallGridRef.current.worldToGrid(pos.x, pos.z);
+                    const removedCell = wallGridRef.current.removeWall(grid.gx, grid.gz);
+
+                    // Update neighbor geometries after removal
+                    if (removedCell) {
+                      const directions = ['north', 'south', 'east', 'west'];
+                      directions.forEach(dir => {
+                        const neighbor = removedCell.neighbors[dir];
+                        if (neighbor && neighbor.building) {
+                          updateWallSegmentGeometry(
+                            neighbor.building,
+                            neighbor.segmentType,
+                            neighbor.rotation
+                          );
+                        }
+                      });
+                    }
+
+                    // Clear pathfinding cache since walls changed
+                    if (pathfindingRef.current) {
+                      pathfindingRef.current.clearCache();
+                    }
+                  }
+
+                  if (!isWallLikeType(data.targetBuilding.userData.type) && wallGridRef.current) {
+                    const blockedCell = data.targetBuilding.userData.blockedCell;
+                    if (blockedCell) {
+                      wallGridRef.current.setBlocked(blockedCell.gx, blockedCell.gz, false);
+                    } else {
+                      const pos = data.targetBuilding.position;
+                      const grid = wallGridRef.current.worldToGrid(pos.x, pos.z);
+                      wallGridRef.current.setBlocked(grid.gx, grid.gz, false);
+                    }
+                    if (pathfindingRef.current) {
+                      pathfindingRef.current.clearCache();
+                    }
+                  }
+
                   scene.remove(data.targetBuilding);
                   const idx = buildingObjects.indexOf(data.targetBuilding);
                   if (idx > -1) buildingObjects.splice(idx, 1);
                   data.targetBuilding = null;
+                  data.currentTarget = null;
+                  data.targetType = 'base';
                 }
               } else {
                 gameState.baseHealth -= data.damage;
                 setBaseHealth(Math.max(0, Math.floor(gameState.baseHealth)));
+                soundSystem.baseDamage();
+
+                // Snake poison - apply DoT to base
+                if (data.canPoison && gameState.baseHealth > 0) {
+                  gameState.basePoisoned = true;
+                  gameState.basePoisonDamage = 2; // 2 damage per tick to base
+                  gameState.basePoisonDuration = 6; // 6 seconds
+                  gameState.basePoisonTickTimer = 0;
+                  setMessage('🐍 Basis vergiftet!');
+                }
 
                 if (gameState.baseHealth <= 0) {
                   // Game over - award partial points
@@ -3089,6 +4372,15 @@ healerEditor.config            - Aktuelle Werte zeigen
           const data = defender.userData;
           data.attackCooldown -= dt;
           data.abilityCooldown -= dt;
+
+          // Decay Tank taunt duration
+          if (data.isTaunting && data.tauntDuration !== undefined) {
+            data.tauntDuration -= dt;
+            if (data.tauntDuration <= 0) {
+              data.isTaunting = false;
+            }
+          }
+
           if (!data.patrolTarget) data.patrolTarget = new THREE.Vector3();
           if (data.patrolWait === undefined) data.patrolWait = 0;
 
@@ -3276,6 +4568,12 @@ healerEditor.config            - Aktuelle Werte zeigen
           if (data.hpBar) {
             data.hpBar.scale.x = Math.max(0.01, data.health / data.maxHealth);
           }
+
+          resolveUnitBuildingCollisions(defender, {
+            unitRadius: UNIT_COLLISION_RADIUS.defender,
+            allowBuilding: (building) => building.userData.type === 'gate',
+            ignoreCastle: false,
+          });
         });
 
         // Tower AI
@@ -3307,6 +4605,7 @@ healerEditor.config            - Aktuelle Werte zeigen
             );
             scene.add(proj);
             projectiles.push(proj);
+            soundSystem.projectile();
             
             if (building.userData.crossbow) {
               building.userData.crossbow.lookAt(nearestEnemy.position);
@@ -3419,6 +4718,7 @@ healerEditor.config            - Aktuelle Werte zeigen
             const killPosition = enemy.position.clone();
 
             effects.push(...createExplosion(killPosition, wasBoss ? 0xFFD700 : 0xFF6B35));
+            wasBoss ? soundSystem.bossDeath() : soundSystem.enemyDeath();
 
             // Kill combo system
             gameState.combo++;
@@ -3509,7 +4809,16 @@ healerEditor.config            - Aktuelle Werte zeigen
       camera.position.z += (camTarget.z + baseZ - camera.position.z) * 0.03;
       camera.lookAt(camTarget.x * 0.5, 0, camTarget.z * 0.5);
 
-      renderer.render(scene, camera);
+      try {
+        renderer.render(scene, camera);
+      } catch (e) {
+        // Log only once to avoid spam
+        if (!window.__renderErrorLogged) {
+          console.error('[Render] Error during render:', e.message);
+          console.error('[Render] This may be caused by a disposed material or invalid texture');
+          window.__renderErrorLogged = true;
+        }
+      }
     }
 
     animate();
@@ -3540,6 +4849,8 @@ healerEditor.config            - Aktuelle Werte zeigen
       // Clean up wall preview ghosts
       wallPreviewGhosts.forEach(ghost => scene.remove(ghost));
       wallPreviewGhosts = [];
+      // Clean up landscape
+      if (landscapeSystem) landscapeSystem.dispose();
       renderer.dispose();
     };
   }, [getSkillEffect, getBuildingCost]);
@@ -3553,14 +4864,7 @@ healerEditor.config            - Aktuelle Werte zeigen
 
   // ============== SKILL TREE UI ==============
   const SkillTreePanel = () => {
-    const tiers = [
-      { name: 'Basis', skills: ['startCarrots', 'baseHealth', 'dayLength'] },
-      { name: 'Sammler', skills: ['collectorSpeed', 'collectorCapacity', 'autoCollect'] },
-      { name: 'Gebäude', skills: ['cheapBuildings', 'towerDamage', 'towerRange', 'wallHealth'] },
-      { name: 'Helden', skills: ['heroSpawnRate', 'heroStats', 'startHero'] },
-      { name: 'Spezial', skills: ['critChance', 'rageBonus', 'weatherMaster'] },
-      { name: 'Ultimate', skills: ['goldenAge', 'fortress'] },
-    ];
+    const tiers = SKILL_TIERS;
 
     return (
       <div className="absolute inset-0 bg-black/95 z-50 overflow-y-auto p-4">
@@ -3677,6 +4981,31 @@ healerEditor.config            - Aktuelle Werte zeigen
           <div className="text-gray-400 text-sm">Beste Welle: {meta.bestWave}</div>
         </div>
 
+        {/* Difficulty Selector */}
+        <div className="bg-black/30 rounded-xl p-3 mb-4 w-full max-w-xs">
+          <div className="text-gray-400 text-sm mb-2 text-center">Schwierigkeit:</div>
+          <div className="flex gap-2 justify-center">
+            {Object.entries(DIFFICULTY_MODS).map(([key, mod]) => (
+              <button
+                key={key}
+                className={`px-3 py-2 rounded-lg text-sm font-bold transition-all ${
+                  difficulty === key
+                    ? 'bg-green-500 text-white scale-105'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+                onClick={() => setDifficulty(key)}
+              >
+                {mod.icon} {mod.label}
+              </button>
+            ))}
+          </div>
+          <div className="text-xs text-gray-500 mt-2 text-center">
+            {difficulty === 'easy' && '🌱 -30% Feind-Stärke, +30% Karotten'}
+            {difficulty === 'normal' && '⚔️ Standard-Balancing'}
+            {difficulty === 'hard' && '💀 +50% Feind-Stärke, -20% Karotten'}
+          </div>
+        </div>
+
         <button
           className="bg-green-500 hover:bg-green-600 text-white text-xl font-bold px-12 py-4 rounded-2xl mb-4 w-full max-w-xs"
           onClick={startGame}
@@ -3700,6 +5029,8 @@ healerEditor.config            - Aktuelle Werte zeigen
   const buildingCosts = {
     collectorHut: getBuildingCost('collectorHut'),
     heroHut: getBuildingCost('heroHut'),
+    beaverHut: getBuildingCost('beaverHut'),
+    gate: getBuildingCost('gate'),
     tower: getBuildingCost('tower'),
     wall: getBuildingCost('wall'),
   };
@@ -3730,9 +5061,9 @@ healerEditor.config            - Aktuelle Werte zeigen
           </div>
           
           <div className="bg-black/60 rounded-lg px-2 py-1 text-xs text-white">
-            {weather === 'sunny' && '☀️ Sonnig'}
-            {weather === 'rainy' && '🌧️ Regen (-20% Feind-Speed)'}
-            {weather === 'windy' && '💨 Wind (+20% Speed)'}
+            {weather === 'sunny' && (skills.weatherMaster?.level >= 1 ? '☀️ Sonnig (+Gold ✨)' : '☀️ Sonnig')}
+            {weather === 'rainy' && (skills.weatherMaster?.level >= 1 ? '🌧️ Regen (-35% Feind)' : '🌧️ Regen (-20% Feind)')}
+            {weather === 'windy' && (skills.weatherMaster?.level >= 1 ? '💨 Wind (+35% Speed)' : '💨 Wind (+20% Speed)')}
           </div>
 
           {/* Wave Preview - shows upcoming enemies */}
@@ -3764,13 +5095,27 @@ healerEditor.config            - Aktuelle Werte zeigen
         </div>
 
         {/* Right: Resources */}
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-start">
+          <button
+            className="bg-black/70 rounded-xl px-2 py-2 text-xl pointer-events-auto"
+            onClick={() => {
+              const enabled = soundSystem.toggle();
+              setSoundEnabled(enabled);
+            }}
+            title={soundEnabled ? 'Sound aus' : 'Sound an'}
+          >
+            {soundEnabled ? '🔊' : '🔇'}
+          </button>
           <div className="bg-orange-600 rounded-xl px-3 py-2 text-center min-w-[70px]">
             <div className="text-white text-xl font-bold">{score}</div>
             <div className="text-orange-200 text-xs">🥕</div>
           </div>
+          <div className="bg-amber-700 rounded-xl px-3 py-2 text-center min-w-[70px]">
+            <div className="text-white text-xl font-bold">{wood}</div>
+            <div className="text-amber-200 text-xs">🪵</div>
+          </div>
           <div className={`rounded-xl px-3 py-2 text-center min-w-[70px] ${
-            baseHealth > maxBaseHealth * 0.5 ? 'bg-green-600' : 
+            baseHealth > maxBaseHealth * 0.5 ? 'bg-green-600' :
             baseHealth > maxBaseHealth * 0.25 ? 'bg-yellow-600' : 'bg-red-600'
           }`}>
             <div className="text-white text-lg font-bold">{Math.floor(baseHealth)}</div>
@@ -3785,16 +5130,21 @@ healerEditor.config            - Aktuelle Werte zeigen
           <div className="bg-black/85 rounded-2xl p-3">
             <div className="text-white text-xs text-center mb-2">
               {buildMode === 'wall' ? '🧱 Ziehen zum Mauern bauen' :
+               buildMode === 'gate' ? '👆 Klicken für Tor | R = Drehen' :
                buildMode ? '👆 Klicken zum Platzieren | R = Drehen' : '🏗️ Bauen'}
             </div>
-            <div className="grid grid-cols-5 gap-2">
+            <div className="grid grid-cols-6 gap-2">
               {[
                 { type: 'collectorHut', icon: '🧺', label: 'Sammler', cost: buildingCosts.collectorHut,
                   desc: 'Spawnt Sammler die Karotten einsammeln', stats: '200 HP | Max 3 Sammler' },
                 { type: 'heroHut', icon: '⚔️', label: 'Helden', cost: buildingCosts.heroHut,
                   desc: 'Spawnt zufällige Helden zur Verteidigung', stats: `200 HP | Spawn: ${Math.max(10, 20 - getSkillEffect('heroSpawnRate'))}s` },
+                { type: 'beaverHut', icon: '🦫', label: 'Biber', cost: buildingCosts.beaverHut,
+                  desc: 'Spawnt Biber die Holz sammeln und reparieren', stats: '180 HP | Max 2 Biber' },
                 { type: 'tower', icon: '🗼', label: 'Turm', cost: buildingCosts.tower,
                   desc: 'Automatischer Fernkampf-Turm', stats: `200 HP | ${Math.round(25 * (1 + getSkillEffect('towerDamage') / 100))} DMG | ${Math.round(12 * (1 + getSkillEffect('towerRange') / 100))}m` },
+                { type: 'gate', icon: '🚪', label: 'Tor', cost: buildingCosts.gate,
+                  desc: 'Blockiert Feinde, Verbündete passieren', stats: `${100 + getSkillEffect('wallHealth')} HP | Gerade Ausrichtung` },
                 { type: 'wall', icon: '🧱', label: 'Mauer', cost: buildingCosts.wall,
                   desc: 'Blockiert Feinde', stats: `${100 + getSkillEffect('wallHealth')} HP | Ziehen für Linie` },
                 { type: 'breed', icon: '💕', label: 'Züchten', cost: 15,

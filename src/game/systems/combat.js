@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { createProjectile } from '../entities/Projectile'
 import { createExplosionParticles, createHealParticles } from '../utils/three-helpers'
+import { addThreat, clearThreat, THREAT_CONFIG } from './threat'
 
 // Find nearest enemy within range
 export function findNearestEnemy(position, enemies, range) {
@@ -70,12 +71,15 @@ export function processDefenderAttack(defender, enemies, scene, projectiles, eff
 
   // Apply attack
   if (data.type === 'bomber') {
-    // Bomber creates projectile
+    // Bomber creates projectile - threat is added when projectile hits
     const proj = createProjectile(defender.position, nearestEnemy.position, 'carrot', skillEffects)
+    proj.userData.source = defender  // Track source for threat
     scene.add(proj)
     projectiles.push(proj)
   } else {
     nearestEnemy.userData.health -= damage
+    // Add threat to enemy's threat table
+    addThreat(nearestEnemy, defender, damage * THREAT_CONFIG.baseDamageThreat)
   }
 
   // Create crit effect
@@ -113,11 +117,12 @@ export function processDefenderAbility(defender, enemies, defenders, scene, effe
       return { type: 'slow' }
 
     case 'shadow':
-      // Confuse nearest enemy
+      // Confuse nearest enemy - clears their threat table
       const { enemy: nearestEnemy } = findNearestEnemy(defender.position, enemies, data.attackRange)
       if (nearestEnemy) {
         nearestEnemy.userData.confused = true
         nearestEnemy.userData.confuseTime = 5
+        clearThreat(nearestEnemy)  // Clear threat when confused
         const confuseParticles = createExplosionParticles(nearestEnemy.position, 0x4B0082)
         confuseParticles.forEach(p => scene.add(p))
         effects.push(...confuseParticles)
@@ -126,15 +131,29 @@ export function processDefenderAbility(defender, enemies, defenders, scene, effe
       break
 
     case 'tank':
-      // Taunt nearby enemies
+      // Enhanced Taunt - forces enemies to target this tank using threat system
+      defender.userData.isTaunting = true
+      defender.userData.tauntDuration = 4
+      let taunted = 0
       enemies.forEach(enemy => {
         const dx = defender.position.x - enemy.position.x
         const dz = defender.position.z - enemy.position.z
         if (Math.sqrt(dx * dx + dz * dz) < 8) {
+          // Save original target for return after retaliation
+          enemy.userData.originalTarget = enemy.userData.targetBuilding
           enemy.userData.targetBuilding = null
+          enemy.userData.currentTarget = defender
+          enemy.userData.targetType = 'defender'
+          enemy.userData.isRetaliating = true
+          // Add maximum threat to force targeting
+          addThreat(enemy, defender, THREAT_CONFIG.tauntThreat)
+          taunted++
         }
       })
-      return { type: 'taunt' }
+      const tauntParticles = createExplosionParticles(defender.position, 0x4682B4)
+      tauntParticles.forEach(p => scene.add(p))
+      effects.push(...tauntParticles)
+      return { type: 'taunt', affected: taunted }
 
     case 'assassin':
       // Teleport to weakest enemy

@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Guinea Bros - Balancing Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --bg-dark: #0f172a;
+      --bg-card: #1e293b;
+      --accent: #f97316;
+    }
+    body {
+      background: var(--bg-dark);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    .slider-track {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 6px;
+      border-radius: 3px;
+      background: #475569;
+    }
+    .slider-track::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .slider-track::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+    .color-preview {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      border: 2px solid #475569;
+    }
+    .tab-active {
+      border-bottom: 3px solid var(--accent);
+      color: var(--accent);
+    }
+    .stat-card {
+      transition: all 0.2s;
+    }
+    .stat-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px rgba(249, 115, 22, 0.2);
+    }
+    .enemy-icon {
+      font-size: 2rem;
+    }
+    pre {
+      background: #0f172a;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    code {
+      font-family: 'Fira Code', 'Consolas', monospace;
+    }
+  </style>
+</head>
+<body class="min-h-screen text-gray-100">
+  <div id="root"></div>
+
+  <script type="module">
+    import React, { useState, useCallback, useEffect } from 'https://esm.sh/react@18.2.0'
+    import ReactDOM from 'https://esm.sh/react-dom@18.2.0/client'
+
+    // Initial Enemy Data
+    const INITIAL_ENEMIES = {
+      fox: {
+        name: 'Fuchs',
+        icon: '🦊',
+        health: 50,
+        speed: 0.04,
+        damage: 12,
+        radius: 1.2,
+        color: 0xD2691E,
+        attackCooldown: 1.5,
+        scoreValue: 5,
+      },
+      boss_fox: {
+        name: 'Boss Fuchs',
+        icon: '🦊👑',
+        health: 500,
+        speed: 0.025,
+        damage: 25,
+        radius: 3,
+        color: 0x8B0000,
+        attackCooldown: 1,
+        scoreValue: 50,
+        scale: 2.5,
+      },
+      raven: {
+        name: 'Rabe',
+        icon: '🐦‍⬛',
+        health: 30,
+        speed: 0.06,
+        damage: 10,
+        radius: 0.8,
+        color: 0x1a1a1a,
+        attackCooldown: 1.5,
+        flying: true,
+        scoreValue: 5,
+      },
+      boss_raven: {
+        name: 'Boss Rabe',
+        icon: '🐦‍⬛👑',
+        health: 350,
+        speed: 0.04,
+        damage: 18,
+        radius: 1.6,
+        color: 0x4B0082,
+        attackCooldown: 1,
+        flying: true,
+        scoreValue: 50,
+        scale: 2,
+      },
+      snake: {
+        name: 'Schlange',
+        icon: '🐍',
+        health: 70,
+        speed: 0.055,
+        damage: 15,
+        radius: 0.6,
+        color: 0x228B22,
+        attackCooldown: 1.5,
+        canPoison: true,
+        scoreValue: 5,
+      },
+    }
+
+    const INITIAL_WAVES = [
+      { foxes: 5, ravens: 0, snakes: 0, delay: 1.8, boss: null },
+      { foxes: 7, ravens: 3, snakes: 0, delay: 1.5, boss: null },
+      { foxes: 8, ravens: 5, snakes: 2, delay: 1.3, boss: 'fox' },
+      { foxes: 12, ravens: 7, snakes: 4, delay: 1.1, boss: null },
+      { foxes: 15, ravens: 10, snakes: 5, delay: 0.9, boss: null },
+      { foxes: 18, ravens: 12, snakes: 8, delay: 0.8, boss: 'raven' },
+      { foxes: 22, ravens: 15, snakes: 10, delay: 0.7, boss: null },
+      { foxes: 30, ravens: 20, snakes: 15, delay: 0.5, boss: 'both' },
+    ]
+
+    const INITIAL_BEHAVIOR = {
+      fox: {
+        defenderFocus: 0.6,
+        threatMultiplier: 1.2,
+        retaliationChance: 0.8,
+        aggroRange: 10,
+        leashRange: 12,
+      },
+      boss_fox: {
+        defenderFocus: 0.4,
+        threatMultiplier: 0.8,
+        retaliationChance: 0.5,
+        aggroRange: 12,
+        leashRange: 15,
+      },
+      raven: {
+        defenderFocus: 0.7,
+        threatMultiplier: 1.5,
+        retaliationChance: 0.9,
+        aggroRange: 14,
+        leashRange: 20,
+      },
+      boss_raven: {
+        defenderFocus: 0.5,
+        threatMultiplier: 1.0,
+        retaliationChance: 0.6,
+        aggroRange: 16,
+        leashRange: 25,
+      },
+      snake: {
+        defenderFocus: 0.2,
+        threatMultiplier: 0.5,
+        retaliationChance: 0.3,
+        aggroRange: 6,
+        leashRange: 8,
+      },
+    }
+
+    // Stat definitions with min/max/step
+    const STAT_DEFS = {
+      health: { label: 'HP', min: 10, max: 1000, step: 10, unit: '', icon: '❤️' },
+      speed: { label: 'Speed', min: 0.01, max: 0.15, step: 0.005, unit: '', icon: '💨' },
+      damage: { label: 'Damage', min: 1, max: 100, step: 1, unit: '', icon: '⚔️' },
+      radius: { label: 'Radius', min: 0.3, max: 5, step: 0.1, unit: '', icon: '📏' },
+      attackCooldown: { label: 'Attack CD', min: 0.3, max: 5, step: 0.1, unit: 's', icon: '⏱️' },
+      scoreValue: { label: 'Score', min: 1, max: 100, step: 1, unit: '', icon: '🏆' },
+      scale: { label: 'Scale', min: 1, max: 5, step: 0.1, unit: 'x', icon: '📐' },
+    }
+
+    const BEHAVIOR_DEFS = {
+      defenderFocus: { label: 'Defender Focus', min: 0, max: 1, step: 0.1, icon: '🎯' },
+      threatMultiplier: { label: 'Threat Multi', min: 0, max: 3, step: 0.1, icon: '😤' },
+      retaliationChance: { label: 'Retaliation', min: 0, max: 1, step: 0.1, icon: '↩️' },
+      aggroRange: { label: 'Aggro Range', min: 1, max: 30, step: 1, icon: '👁️' },
+      leashRange: { label: 'Leash Range', min: 1, max: 40, step: 1, icon: '🔗' },
+    }
+
+    // Helper to convert hex number to CSS color
+    const hexToColor = (hex) => '#' + hex.toString(16).padStart(6, '0')
+
+    // Slider Component
+    function StatSlider({ label, value, min, max, step, unit, icon, onChange }) {
+      return React.createElement('div', { className: 'mb-3' },
+        React.createElement('div', { className: 'flex justify-between items-center mb-1' },
+          React.createElement('span', { className: 'text-sm text-gray-400' }, `${icon} ${label}`),
+          React.createElement('span', { className: 'text-sm font-mono text-orange-400' },
+            `${typeof value === 'number' ? value.toFixed(step < 1 ? 2 : 0) : value}${unit}`)
+        ),
+        React.createElement('input', {
+          type: 'range',
+          min,
+          max,
+          step,
+          value,
+          onChange: (e) => onChange(parseFloat(e.target.value)),
+          className: 'w-full slider-track'
+        })
+      )
+    }
+
+    // Enemy Card Component
+    function EnemyCard({ id, enemy, behavior, onEnemyChange, onBehaviorChange }) {
+      const [expanded, setExpanded] = useState(false)
+
+      return React.createElement('div', {
+        className: 'stat-card bg-slate-800 rounded-xl p-4 border border-slate-700'
+      },
+        // Header
+        React.createElement('div', {
+          className: 'flex items-center justify-between cursor-pointer',
+          onClick: () => setExpanded(!expanded)
+        },
+          React.createElement('div', { className: 'flex items-center gap-3' },
+            React.createElement('span', { className: 'enemy-icon' }, enemy.icon),
+            React.createElement('div', null,
+              React.createElement('h3', { className: 'font-bold text-lg' }, enemy.name),
+              React.createElement('span', { className: 'text-xs text-gray-500' }, id)
+            )
+          ),
+          React.createElement('div', { className: 'flex items-center gap-4' },
+            React.createElement('div', {
+              className: 'color-preview',
+              style: { backgroundColor: hexToColor(enemy.color) }
+            }),
+            React.createElement('span', { className: 'text-2xl' }, expanded ? '▼' : '▶')
+          )
+        ),
+
+        // Quick Stats
+        React.createElement('div', { className: 'grid grid-cols-4 gap-2 mt-3 text-center text-xs' },
+          React.createElement('div', { className: 'bg-slate-900 rounded p-2' },
+            React.createElement('div', { className: 'text-red-400 font-bold' }, enemy.health),
+            React.createElement('div', { className: 'text-gray-500' }, 'HP')
+          ),
+          React.createElement('div', { className: 'bg-slate-900 rounded p-2' },
+            React.createElement('div', { className: 'text-orange-400 font-bold' }, enemy.damage),
+            React.createElement('div', { className: 'text-gray-500' }, 'DMG')
+          ),
+          React.createElement('div', { className: 'bg-slate-900 rounded p-2' },
+            React.createElement('div', { className: 'text-blue-400 font-bold' }, enemy.speed.toFixed(3)),
+            React.createElement('div', { className: 'text-gray-500' }, 'SPD')
+          ),
+          React.createElement('div', { className: 'bg-slate-900 rounded p-2' },
+            React.createElement('div', { className: 'text-green-400 font-bold' }, enemy.attackCooldown + 's'),
+            React.createElement('div', { className: 'text-gray-500' }, 'CD')
+          )
+        ),
+
+        // Expanded Stats
+        expanded && React.createElement('div', { className: 'mt-4 pt-4 border-t border-slate-700' },
+          React.createElement('h4', { className: 'text-sm font-bold text-gray-400 mb-3' }, '⚔️ Combat Stats'),
+          Object.entries(STAT_DEFS).map(([key, def]) =>
+            enemy[key] !== undefined && React.createElement(StatSlider, {
+              key,
+              ...def,
+              value: enemy[key],
+              onChange: (val) => onEnemyChange(id, key, val)
+            })
+          ),
+
+          // Color picker
+          React.createElement('div', { className: 'flex items-center gap-3 mb-4' },
+            React.createElement('span', { className: 'text-sm text-gray-400' }, '🎨 Color'),
+            React.createElement('input', {
+              type: 'color',
+              value: hexToColor(enemy.color),
+              onChange: (e) => onEnemyChange(id, 'color', parseInt(e.target.value.slice(1), 16)),
+              className: 'w-12 h-8 rounded cursor-pointer'
+            })
+          ),
+
+          // Behavior section
+          behavior && React.createElement('div', null,
+            React.createElement('h4', { className: 'text-sm font-bold text-gray-400 mb-3 mt-4' }, '🧠 AI Behavior'),
+            Object.entries(BEHAVIOR_DEFS).map(([key, def]) =>
+              behavior[key] !== undefined && React.createElement(StatSlider, {
+                key,
+                ...def,
+                unit: key.includes('Range') ? '' : (key.includes('Chance') || key.includes('Focus') ? '%' : 'x'),
+                value: behavior[key],
+                onChange: (val) => onBehaviorChange(id, key, val)
+              })
+            )
+          ),
+
+          // Special flags
+          React.createElement('div', { className: 'flex gap-2 mt-4 flex-wrap' },
+            enemy.flying && React.createElement('span', { className: 'px-2 py-1 bg-blue-900 text-blue-300 rounded text-xs' }, '✈️ Flying'),
+            enemy.canPoison && React.createElement('span', { className: 'px-2 py-1 bg-green-900 text-green-300 rounded text-xs' }, '☠️ Poison')
+          )
+        )
+      )
+    }
+
+    // Wave Editor Component
+    function WaveEditor({ waves, onWaveChange, onAddWave, onRemoveWave }) {
+      return React.createElement('div', { className: 'space-y-3' },
+        waves.map((wave, idx) =>
+          React.createElement('div', {
+            key: idx,
+            className: 'bg-slate-800 rounded-xl p-4 border border-slate-700'
+          },
+            React.createElement('div', { className: 'flex items-center justify-between mb-3' },
+              React.createElement('h3', { className: 'font-bold text-orange-400' }, `Wave ${idx + 1}`),
+              React.createElement('div', { className: 'flex gap-2' },
+                wave.boss && React.createElement('span', {
+                  className: 'px-2 py-1 bg-red-900 text-red-300 rounded text-xs'
+                }, `👑 ${wave.boss.toUpperCase()}`),
+                waves.length > 1 && React.createElement('button', {
+                  onClick: () => onRemoveWave(idx),
+                  className: 'text-red-400 hover:text-red-300 text-sm'
+                }, '✕')
+              )
+            ),
+            React.createElement('div', { className: 'grid grid-cols-2 md:grid-cols-4 gap-3' },
+              // Foxes
+              React.createElement('div', null,
+                React.createElement('label', { className: 'text-xs text-gray-400' }, '🦊 Foxes'),
+                React.createElement('input', {
+                  type: 'number',
+                  min: 0,
+                  value: wave.foxes,
+                  onChange: (e) => onWaveChange(idx, 'foxes', parseInt(e.target.value) || 0),
+                  className: 'w-full bg-slate-900 rounded px-2 py-1 text-center'
+                })
+              ),
+              // Ravens
+              React.createElement('div', null,
+                React.createElement('label', { className: 'text-xs text-gray-400' }, '🐦‍⬛ Ravens'),
+                React.createElement('input', {
+                  type: 'number',
+                  min: 0,
+                  value: wave.ravens,
+                  onChange: (e) => onWaveChange(idx, 'ravens', parseInt(e.target.value) || 0),
+                  className: 'w-full bg-slate-900 rounded px-2 py-1 text-center'
+                })
+              ),
+              // Snakes
+              React.createElement('div', null,
+                React.createElement('label', { className: 'text-xs text-gray-400' }, '🐍 Snakes'),
+                React.createElement('input', {
+                  type: 'number',
+                  min: 0,
+                  value: wave.snakes,
+                  onChange: (e) => onWaveChange(idx, 'snakes', parseInt(e.target.value) || 0),
+                  className: 'w-full bg-slate-900 rounded px-2 py-1 text-center'
+                })
+              ),
+              // Delay
+              React.createElement('div', null,
+                React.createElement('label', { className: 'text-xs text-gray-400' }, '⏱️ Delay (s)'),
+                React.createElement('input', {
+                  type: 'number',
+                  min: 0.1,
+                  step: 0.1,
+                  value: wave.delay,
+                  onChange: (e) => onWaveChange(idx, 'delay', parseFloat(e.target.value) || 0.5),
+                  className: 'w-full bg-slate-900 rounded px-2 py-1 text-center'
+                })
+              )
+            ),
+            // Boss selector
+            React.createElement('div', { className: 'mt-3' },
+              React.createElement('label', { className: 'text-xs text-gray-400' }, '👑 Boss'),
+              React.createElement('select', {
+                value: wave.boss || '',
+                onChange: (e) => onWaveChange(idx, 'boss', e.target.value || null),
+                className: 'ml-2 bg-slate-900 rounded px-2 py-1 text-sm'
+              },
+                React.createElement('option', { value: '' }, 'None'),
+                React.createElement('option', { value: 'fox' }, '🦊 Fox Boss'),
+                React.createElement('option', { value: 'raven' }, '🐦‍⬛ Raven Boss'),
+                React.createElement('option', { value: 'both' }, '👑 Both Bosses')
+              )
+            )
+          )
+        ),
+        React.createElement('button', {
+          onClick: onAddWave,
+          className: 'w-full py-3 bg-slate-800 hover:bg-slate-700 rounded-xl border-2 border-dashed border-slate-600 text-gray-400 hover:text-white transition-colors'
+        }, '+ Add Wave')
+      )
+    }
+
+    // Code Export Component
+    function CodeExport({ enemies, waves, behavior }) {
+      const generateCode = () => {
+        // Generate ENEMY_TYPES
+        let code = '// Enemy configurations\nexport const ENEMY_TYPES = {\n'
+        for (const [id, enemy] of Object.entries(enemies)) {
+          const { name, icon, ...stats } = enemy
+          code += `  ${id}: {\n`
+          for (const [key, val] of Object.entries(stats)) {
+            if (key === 'color') {
+              code += `    ${key}: 0x${val.toString(16).toUpperCase()},\n`
+            } else if (typeof val === 'boolean') {
+              code += `    ${key}: ${val},\n`
+            } else if (typeof val === 'number') {
+              code += `    ${key}: ${val},\n`
+            }
+          }
+          code += `  },\n`
+        }
+        code += '}\n\n'
+
+        // Generate WAVE_CONFIGS
+        code += 'export const WAVE_CONFIGS = [\n'
+        for (const wave of waves) {
+          const parts = []
+          parts.push(`foxes: ${wave.foxes}`)
+          parts.push(`ravens: ${wave.ravens}`)
+          parts.push(`snakes: ${wave.snakes}`)
+          parts.push(`delay: ${wave.delay}`)
+          if (wave.boss) parts.push(`boss: '${wave.boss}'`)
+          code += `  { ${parts.join(', ')} },\n`
+        }
+        code += ']\n\n'
+        code += 'export const TOTAL_WAVES = WAVE_CONFIGS.length\n\n'
+
+        // Generate ENEMY_BEHAVIOR
+        code += '// Enemy AI Behavior profiles for the Threat/Aggro system\n'
+        code += 'export const ENEMY_BEHAVIOR = {\n'
+        for (const [id, beh] of Object.entries(behavior)) {
+          code += `  ${id}: {\n`
+          for (const [key, val] of Object.entries(beh)) {
+            if (Array.isArray(val)) {
+              code += `    ${key}: ${JSON.stringify(val)},\n`
+            } else {
+              code += `    ${key}: ${val},\n`
+            }
+          }
+          code += `  },\n`
+        }
+        code += '}\n'
+
+        return code
+      }
+
+      const copyToClipboard = () => {
+        navigator.clipboard.writeText(generateCode())
+        alert('Code copied to clipboard!')
+      }
+
+      const downloadFile = () => {
+        const blob = new Blob([generateCode()], { type: 'text/javascript' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'enemies.js'
+        a.click()
+        URL.revokeObjectURL(url)
+      }
+
+      return React.createElement('div', { className: 'space-y-4' },
+        React.createElement('div', { className: 'flex gap-3' },
+          React.createElement('button', {
+            onClick: copyToClipboard,
+            className: 'flex-1 py-3 bg-orange-600 hover:bg-orange-500 rounded-lg font-bold transition-colors'
+          }, '📋 Copy to Clipboard'),
+          React.createElement('button', {
+            onClick: downloadFile,
+            className: 'flex-1 py-3 bg-slate-700 hover:bg-slate-600 rounded-lg font-bold transition-colors'
+          }, '💾 Download enemies.js')
+        ),
+        React.createElement('pre', { className: 'p-4 text-xs text-gray-300 max-h-96 overflow-auto' },
+          React.createElement('code', null, generateCode())
+        )
+      )
+    }
+
+    // DPS Calculator
+    function DPSCalculator({ enemies }) {
+      const calcDPS = (enemy) => (enemy.damage / enemy.attackCooldown).toFixed(1)
+      const calcEHP = (enemy) => enemy.health // Could factor in armor later
+      const calcThreat = (enemy) => {
+        const dps = enemy.damage / enemy.attackCooldown
+        return (dps * enemy.health / 100).toFixed(1)
+      }
+
+      return React.createElement('div', { className: 'bg-slate-800 rounded-xl p-4 border border-slate-700' },
+        React.createElement('h3', { className: 'font-bold text-lg mb-4' }, '📊 Balance Overview'),
+        React.createElement('div', { className: 'overflow-x-auto' },
+          React.createElement('table', { className: 'w-full text-sm' },
+            React.createElement('thead', null,
+              React.createElement('tr', { className: 'text-left text-gray-400 border-b border-slate-700' },
+                React.createElement('th', { className: 'pb-2' }, 'Enemy'),
+                React.createElement('th', { className: 'pb-2 text-center' }, 'DPS'),
+                React.createElement('th', { className: 'pb-2 text-center' }, 'EHP'),
+                React.createElement('th', { className: 'pb-2 text-center' }, 'Threat'),
+                React.createElement('th', { className: 'pb-2 text-center' }, 'Kill Time*')
+              )
+            ),
+            React.createElement('tbody', null,
+              Object.entries(enemies).map(([id, enemy]) =>
+                React.createElement('tr', { key: id, className: 'border-b border-slate-700/50' },
+                  React.createElement('td', { className: 'py-2' },
+                    React.createElement('span', { className: 'mr-2' }, enemy.icon),
+                    enemy.name
+                  ),
+                  React.createElement('td', { className: 'py-2 text-center text-orange-400 font-mono' }, calcDPS(enemy)),
+                  React.createElement('td', { className: 'py-2 text-center text-red-400 font-mono' }, calcEHP(enemy)),
+                  React.createElement('td', { className: 'py-2 text-center text-yellow-400 font-mono' }, calcThreat(enemy)),
+                  React.createElement('td', { className: 'py-2 text-center text-blue-400 font-mono' },
+                    (enemy.health / 25).toFixed(1) + 's'
+                  )
+                )
+              )
+            )
+          )
+        ),
+        React.createElement('p', { className: 'text-xs text-gray-500 mt-3' },
+          '* Kill Time = HP / 25 (base tower damage)'
+        )
+      )
+    }
+
+    // Main App
+    function App() {
+      const [tab, setTab] = useState('enemies')
+      const [enemies, setEnemies] = useState(INITIAL_ENEMIES)
+      const [waves, setWaves] = useState(INITIAL_WAVES)
+      const [behavior, setBehavior] = useState(INITIAL_BEHAVIOR)
+
+      const handleEnemyChange = useCallback((id, key, value) => {
+        setEnemies(prev => ({
+          ...prev,
+          [id]: { ...prev[id], [key]: value }
+        }))
+      }, [])
+
+      const handleBehaviorChange = useCallback((id, key, value) => {
+        setBehavior(prev => ({
+          ...prev,
+          [id]: { ...prev[id], [key]: value }
+        }))
+      }, [])
+
+      const handleWaveChange = useCallback((idx, key, value) => {
+        setWaves(prev => {
+          const updated = [...prev]
+          updated[idx] = { ...updated[idx], [key]: value }
+          return updated
+        })
+      }, [])
+
+      const addWave = useCallback(() => {
+        setWaves(prev => [...prev, { foxes: 10, ravens: 5, snakes: 3, delay: 1.0, boss: null }])
+      }, [])
+
+      const removeWave = useCallback((idx) => {
+        setWaves(prev => prev.filter((_, i) => i !== idx))
+      }, [])
+
+      // Presets
+      const applyPreset = (preset) => {
+        if (preset === 'easy') {
+          setEnemies(prev => {
+            const updated = {...prev}
+            for (const id in updated) {
+              updated[id] = { ...updated[id], health: updated[id].health * 0.7, damage: updated[id].damage * 0.8 }
+            }
+            return updated
+          })
+        } else if (preset === 'hard') {
+          setEnemies(prev => {
+            const updated = {...prev}
+            for (const id in updated) {
+              updated[id] = { ...updated[id], health: updated[id].health * 1.5, damage: updated[id].damage * 1.3 }
+            }
+            return updated
+          })
+        } else if (preset === 'reset') {
+          setEnemies(INITIAL_ENEMIES)
+          setWaves(INITIAL_WAVES)
+          setBehavior(INITIAL_BEHAVIOR)
+        }
+      }
+
+      return React.createElement('div', { className: 'container mx-auto px-4 py-6 max-w-5xl' },
+        // Header
+        React.createElement('header', { className: 'mb-6' },
+          React.createElement('h1', { className: 'text-3xl font-bold text-orange-400' }, '🐹 Guinea Bros Balancing'),
+          React.createElement('p', { className: 'text-gray-400' }, 'Adjust enemy stats, waves, and AI behavior')
+        ),
+
+        // Quick Actions
+        React.createElement('div', { className: 'flex gap-2 mb-6 flex-wrap' },
+          React.createElement('button', {
+            onClick: () => applyPreset('easy'),
+            className: 'px-4 py-2 bg-green-800 hover:bg-green-700 rounded-lg text-sm'
+          }, '😊 Easy Mode'),
+          React.createElement('button', {
+            onClick: () => applyPreset('hard'),
+            className: 'px-4 py-2 bg-red-800 hover:bg-red-700 rounded-lg text-sm'
+          }, '💀 Hard Mode'),
+          React.createElement('button', {
+            onClick: () => applyPreset('reset'),
+            className: 'px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm'
+          }, '↩️ Reset All')
+        ),
+
+        // Tabs
+        React.createElement('div', { className: 'flex gap-4 border-b border-slate-700 mb-6' },
+          ['enemies', 'waves', 'analysis', 'export'].map(t =>
+            React.createElement('button', {
+              key: t,
+              onClick: () => setTab(t),
+              className: `pb-3 px-2 capitalize ${tab === t ? 'tab-active font-bold' : 'text-gray-400 hover:text-white'}`
+            }, t === 'enemies' ? '👾 Enemies' : t === 'waves' ? '🌊 Waves' : t === 'analysis' ? '📊 Analysis' : '💾 Export')
+          )
+        ),
+
+        // Tab Content
+        tab === 'enemies' && React.createElement('div', { className: 'grid gap-4 md:grid-cols-2' },
+          Object.entries(enemies).map(([id, enemy]) =>
+            React.createElement(EnemyCard, {
+              key: id,
+              id,
+              enemy,
+              behavior: behavior[id],
+              onEnemyChange: handleEnemyChange,
+              onBehaviorChange: handleBehaviorChange
+            })
+          )
+        ),
+
+        tab === 'waves' && React.createElement(WaveEditor, {
+          waves,
+          onWaveChange: handleWaveChange,
+          onAddWave: addWave,
+          onRemoveWave: removeWave
+        }),
+
+        tab === 'analysis' && React.createElement('div', { className: 'space-y-4' },
+          React.createElement(DPSCalculator, { enemies }),
+          // Wave difficulty preview
+          React.createElement('div', { className: 'bg-slate-800 rounded-xl p-4 border border-slate-700' },
+            React.createElement('h3', { className: 'font-bold text-lg mb-4' }, '🌊 Wave Difficulty Curve'),
+            React.createElement('div', { className: 'h-40 flex items-end gap-1' },
+              waves.map((wave, idx) => {
+                const totalEnemies = wave.foxes + wave.ravens + wave.snakes + (wave.boss ? 10 : 0)
+                const maxTotal = Math.max(...waves.map(w => w.foxes + w.ravens + w.snakes + (w.boss ? 10 : 0)))
+                const height = (totalEnemies / maxTotal) * 100
+                return React.createElement('div', {
+                  key: idx,
+                  className: 'flex-1 rounded-t transition-all hover:opacity-80',
+                  style: {
+                    height: `${height}%`,
+                    background: wave.boss ? 'linear-gradient(to top, #dc2626, #f97316)' : '#f97316'
+                  },
+                  title: `Wave ${idx + 1}: ${totalEnemies} enemies`
+                })
+              })
+            ),
+            React.createElement('div', { className: 'flex justify-between text-xs text-gray-500 mt-2' },
+              waves.map((_, idx) => React.createElement('span', { key: idx }, idx + 1))
+            )
+          )
+        ),
+
+        tab === 'export' && React.createElement(CodeExport, { enemies, waves, behavior })
+      )
+    }
+
+    // Mount
+    const root = ReactDOM.createRoot(document.getElementById('root'))
+    root.render(React.createElement(App))
+  </script>
+</body>
+</html>

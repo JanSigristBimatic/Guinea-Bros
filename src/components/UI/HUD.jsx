@@ -5,6 +5,7 @@ export default function HUD({
   phase,
   wave,
   score,
+  wood,
   baseHealth,
   maxBaseHealth,
   dayTimeLeft,
@@ -48,6 +49,10 @@ export default function HUD({
         <div className="bg-orange-600 rounded-xl px-3 py-2 text-center min-w-[70px]">
           <div className="text-white text-xl font-bold">{score}</div>
           <div className="text-orange-200 text-xs">🥕</div>
+        </div>
+        <div className="bg-amber-700 rounded-xl px-3 py-2 text-center min-w-[70px]">
+          <div className="text-white text-xl font-bold">{wood || 0}</div>
+          <div className="text-amber-200 text-xs">🪵</div>
         </div>
         <div className={`rounded-xl px-3 py-2 text-center min-w-[70px] ${
           baseHealth > maxBaseHealth * 0.5 ? 'bg-green-600' :

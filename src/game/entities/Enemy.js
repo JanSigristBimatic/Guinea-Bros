@@ -1,10 +1,11 @@
 import * as THREE from 'three'
-import { ENEMY_TYPES } from '../../constants'
+import { ENEMY_TYPES, ENEMY_BEHAVIOR } from '../../constants'
 import { createMaterial } from '../utils/three-helpers'
 
 export function createFox(isBoss = false) {
   const group = new THREE.Group()
   const config = isBoss ? ENEMY_TYPES.boss_fox : ENEMY_TYPES.fox
+  const behavior = ENEMY_BEHAVIOR[isBoss ? 'boss_fox' : 'fox']
   const scale = config.scale || 1.1
 
   group.userData = {
@@ -21,6 +22,21 @@ export function createFox(isBoss = false) {
     radius: config.radius,
     isBoss,
     targetBuilding: null,
+    // Threat System fields
+    threatTable: new Map(),
+    currentTarget: null,
+    targetType: 'base',
+    isRetaliating: false,
+    originalTarget: null,
+    lastDamageSource: null,
+    lastDamageTime: 0,
+    // Behavior from ENEMY_BEHAVIOR
+    aggroRange: behavior.aggroRange,
+    leashRange: behavior.leashRange,
+    defenderFocus: behavior.defenderFocus,
+    threatMultiplier: behavior.threatMultiplier,
+    retaliationChance: behavior.retaliationChance,
+    priorityTargets: behavior.priorityTargets || [],
   }
 
   const bodyMat = createMaterial(config.color, { roughness: 0.7 })
@@ -107,6 +123,7 @@ export function createFox(isBoss = false) {
 export function createRaven(isBoss = false) {
   const group = new THREE.Group()
   const config = isBoss ? ENEMY_TYPES.boss_raven : ENEMY_TYPES.raven
+  const behavior = ENEMY_BEHAVIOR[isBoss ? 'boss_raven' : 'raven']
   const scale = config.scale || 1
 
   group.userData = {
@@ -124,6 +141,21 @@ export function createRaven(isBoss = false) {
     radius: config.radius,
     isBoss,
     targetBuilding: null,
+    // Threat System fields
+    threatTable: new Map(),
+    currentTarget: null,
+    targetType: 'base',
+    isRetaliating: false,
+    originalTarget: null,
+    lastDamageSource: null,
+    lastDamageTime: 0,
+    // Behavior from ENEMY_BEHAVIOR
+    aggroRange: behavior.aggroRange,
+    leashRange: behavior.leashRange,
+    defenderFocus: behavior.defenderFocus,
+    threatMultiplier: behavior.threatMultiplier,
+    retaliationChance: behavior.retaliationChance,
+    priorityTargets: behavior.priorityTargets || [],
   }
 
   const bodyMat = createMaterial(config.color, { roughness: 0.6 })
@@ -207,6 +239,7 @@ export function createRaven(isBoss = false) {
 export function createSnake() {
   const group = new THREE.Group()
   const config = ENEMY_TYPES.snake
+  const behavior = ENEMY_BEHAVIOR.snake
 
   group.userData = {
     type: 'snake',
@@ -222,6 +255,21 @@ export function createSnake() {
     radius: config.radius,
     targetBuilding: null,
     canPoison: true,
+    // Threat System fields
+    threatTable: new Map(),
+    currentTarget: null,
+    targetType: 'base',
+    isRetaliating: false,
+    originalTarget: null,
+    lastDamageSource: null,
+    lastDamageTime: 0,
+    // Behavior from ENEMY_BEHAVIOR
+    aggroRange: behavior.aggroRange,
+    leashRange: behavior.leashRange,
+    defenderFocus: behavior.defenderFocus,
+    threatMultiplier: behavior.threatMultiplier,
+    retaliationChance: behavior.retaliationChance,
+    priorityTargets: behavior.priorityTargets || [],
   }
 
   // Snake body segments

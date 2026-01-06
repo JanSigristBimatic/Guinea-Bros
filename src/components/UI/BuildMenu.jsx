@@ -23,6 +23,12 @@ export default function BuildMenu({
       cost: buildingCosts.heroHut,
     },
     {
+      type: 'beaverHut',
+      icon: BUILDING_TYPES.beaverHut.icon,
+      label: BUILDING_TYPES.beaverHut.label,
+      cost: buildingCosts.beaverHut,
+    },
+    {
       type: 'tower',
       icon: BUILDING_TYPES.tower.icon,
       label: BUILDING_TYPES.tower.label,
@@ -48,7 +54,7 @@ export default function BuildMenu({
         <div className="text-white text-xs text-center mb-2">
           {buildMode ? '👆 Tippe zum Platzieren' : '🏗️ Bauen'}
         </div>
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-6 gap-2">
           {buildOptions.map(({ type, icon, label, cost }) => (
             <button
               key={type}

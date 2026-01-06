@@ -42,6 +42,7 @@ npm run lint         # ESLint Check
 /plan       - Implementierungsplan erstellen
 /implement  - Code mit Self-Correction implementieren
 ```
+Landscape GLBs are optional; enable them by setting `LANDSCAPE_CONFIG.useGLBAssets = true` in `src/constants/landscape.js` after assets are installed under `public/glb/Landscape/`.
 
 ---
 
@@ -49,7 +50,7 @@ npm run lint         # ESLint Check
 
 ### Core Files
 ```
-guinea-pig-td-roguelike.jsx  # Haupt-Game-Komponente (3.7k Zeilen) - MONOLITH
+src/GuineaPigTDRoguelike.jsx  # Haupt-Game-Komponente (3.7k Zeilen) - MONOLITH
 src/
 ├── constants/               # Game Balance & Config
 │   ├── config.js           # GAME_CONFIG, COLORS, LIGHTING
@@ -67,6 +68,7 @@ src/
 │   └── useControls.js      # Input (Keyboard + Touch)
 └── components/UI/          # HUD, BuildMenu, SkillTree, etc.
 ```
+Source of truth: `src/GuineaPigTDRoguelike.jsx` drives the runtime; the modular UI/hooks/engine files under `src/components/UI`, `src/hooks`, and `src/game/engine.js` are currently not wired.
 
 ### 3D Assets
 ```
@@ -100,7 +102,7 @@ public/glb/
 ### Skill Tree
 - 6 Tiers × 15+ Skills
 - Level-basiert mit Kosten-Array
-- Persistent in localStorage (`guineaPigTD_skills`)
+- Persistent in IndexedDB (`GuineaBrosTD.gameData.skills`)
 
 ### Wave System
 - 8 Waves mit eskalierenden Enemy-Counts
@@ -133,9 +135,12 @@ setBuildings(prev => [...prev, newBuilding]);
 setEnemies(prev => prev.filter(e => e.userData.health > 0));
 ```
 
-### localStorage Keys
-- `guineaPigTD_skills` - Skill Tree State
-- `guineaPigTD_meta` - Progression (totalGames, bestWave, etc.)
+### IndexedDB Storage
+Database: `GuineaBrosTD`, Store: `gameData`
+- `skills` - Skill Tree State
+- `meta` - Progression (totalGames, bestWave, etc.)
+
+*Migration: Alte localStorage-Daten werden automatisch zu IndexedDB migriert.*
 
 ---
 
@@ -158,7 +163,7 @@ setEnemies(prev => prev.filter(e => e.userData.health > 0));
 ## Known Architecture Debt
 
 ### Monolith Problem
-`guinea-pig-td-roguelike.jsx` enthält 3.7k Zeilen und sollte aufgeteilt werden:
+`src/GuineaPigTDRoguelike.jsx` enthält 3.7k Zeilen und sollte aufgeteilt werden:
 - [ ] Game Loop Manager extrahieren
 - [ ] Input Handler separieren
 - [ ] Entity Factory/Manager erstellen
