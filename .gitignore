@@ -27,5 +27,16 @@ npm-debug.log*
 .cache/
 .eslintcache
 
+# Vercel
 .vercel
 .env*.local
+
+# Claude Code
+.claude/settings.local.json
+
+# Windows artifacts
+nul
+
+# Asset packs (download separately)
+*.zip
+public/glb/KayKit_*/

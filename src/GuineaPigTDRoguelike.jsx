@@ -104,6 +104,21 @@ function safeCloneMaterials(object) {
   });
 }
 
+function setMaterialEmissive(material, color, intensity) {
+  const apply = (mat) => {
+    if (!mat || !('emissive' in mat)) return;
+    mat.emissive = new THREE.Color(color);
+    if ('emissiveIntensity' in mat) {
+      mat.emissiveIntensity = intensity;
+    }
+  };
+  if (Array.isArray(material)) {
+    material.forEach(apply);
+  } else {
+    apply(material);
+  }
+}
+
 // ============== PERSISTENT SKILL TREE DATA ==============
 function normalizeSkills(raw) {
   const normalized = JSON.parse(JSON.stringify(DEFAULT_SKILLS));
@@ -1606,8 +1621,7 @@ healerEditor.config            - Aktuelle Werte zeigen
           carrotModel.traverse((child) => {
             if (child.isMesh) {
               child.material = safeCloneMaterial(child.material);
-              child.material.emissive = new THREE.Color(colors[type]);
-              child.material.emissiveIntensity = 0.4;
+              setMaterialEmissive(child.material, colors[type], 0.4);
             }
           });
         }
@@ -1846,12 +1860,15 @@ healerEditor.config            - Aktuelle Werte zeigen
     const baseHealthValue = 100 + getSkillEffect('baseHealth');
     const dayDurationValue = 90 + getSkillEffect('dayLength');
     
+    const toNumber = (value, fallback = 0) => (Number.isFinite(value) ? value : fallback);
+    const initialScore = toNumber(getSkillEffect('startCarrots'));
+
     const gameState = {
       phase: 'day',
       wave: 0,
       baseHealth: baseHealthValue,
       maxBaseHealth: baseHealthValue,
-      score: getSkillEffect('startCarrots'),
+      score: initialScore,
       time: 0,
       dayDuration: dayDurationValue,
       nightActive: false,
@@ -1874,7 +1891,19 @@ healerEditor.config            - Aktuelle Werte zeigen
     };
     gameRef.current = gameState;
 
-    setScore(gameState.score);
+    const getSafeScore = () => toNumber(gameState.score);
+    const setScoreSafe = (value) => {
+      const next = toNumber(value);
+      gameState.score = next;
+      setScore(next);
+    };
+    const addScore = (delta) => {
+      const next = getSafeScore() + toNumber(delta);
+      gameState.score = next;
+      setScore(next);
+    };
+
+    setScoreSafe(gameState.score);
     setWood(0);
     setBaseHealth(gameState.baseHealth);
     setMaxBaseHealth(gameState.maxBaseHealth);
@@ -2213,11 +2242,9 @@ healerEditor.config            - Aktuelle Werte zeigen
         if (child.isMesh && child.material.opacity !== undefined) {
           child.material.opacity = isValid ? 0.6 : 0.3;
           if (!isValid) {
-            child.material.emissive = new THREE.Color(0xff0000);
-            child.material.emissiveIntensity = 0.3;
+            setMaterialEmissive(child.material, 0xff0000, 0.3);
           } else {
-            child.material.emissive = new THREE.Color(0x00ff00);
-            child.material.emissiveIntensity = 0.2;
+            setMaterialEmissive(child.material, 0x00ff00, 0.2);
           }
         }
       });
@@ -2676,15 +2703,14 @@ healerEditor.config            - Aktuelle Werte zeigen
     function createWallGhost(segmentType = 'post') {
       const ghost = createWallSegment(segmentType);
       ghost.traverse((child) => {
-        if (child.isMesh) {
-          child.material = safeCloneMaterial(child.material);
-          child.material.transparent = true;
-          child.material.opacity = 0.5;
-          child.material.depthWrite = false;
-          child.material.emissive = new THREE.Color(0x00ff00);
-          child.material.emissiveIntensity = 0.2;
-        }
-      });
+      if (child.isMesh) {
+        child.material = safeCloneMaterial(child.material);
+        child.material.transparent = true;
+        child.material.opacity = 0.5;
+        child.material.depthWrite = false;
+        setMaterialEmissive(child.material, 0x00ff00, 0.2);
+      }
+    });
       ghost.visible = false;
       ghost.userData.segmentType = segmentType;
       scene.add(ghost);
@@ -2763,8 +2789,7 @@ healerEditor.config            - Aktuelle Werte zeigen
           wallPreviewGhosts[i].traverse((child) => {
             if (child.isMesh) {
               child.material.opacity = isValid ? 0.6 : 0.3;
-              child.material.emissive = isValid ? new THREE.Color(0x00ff00) : new THREE.Color(0xff0000);
-              child.material.emissiveIntensity = isValid ? 0.2 : 0.3;
+              setMaterialEmissive(child.material, isValid ? 0x00ff00 : 0xff0000, isValid ? 0.2 : 0.3);
             }
           });
         } else {
@@ -2948,7 +2973,7 @@ healerEditor.config            - Aktuelle Werte zeigen
         }
 
         const cost = getBuildingCost(type);
-        if (gameState.score < cost) {
+        if (getSafeScore() < cost) {
           if (showMessage) {
             setMessage('Nicht genug Karotten!');
             setTimeout(() => setMessage(''), 1500);
@@ -2956,8 +2981,7 @@ healerEditor.config            - Aktuelle Werte zeigen
           return false;
         }
 
-        gameState.score -= cost;
-        setScore(gameState.score);
+        addScore(-cost);
 
         // Create initial wall building (will be updated with correct segment)
         const building = createGuineaPigHouse(type);
@@ -3003,7 +3027,7 @@ healerEditor.config            - Aktuelle Werte zeigen
 
       // Regular building placement (non-walls)
       const cost = getBuildingCost(type);
-      if (gameState.score < cost) {
+      if (getSafeScore() < cost) {
         if (showMessage) {
           setMessage('Nicht genug Karotten!');
           setTimeout(() => setMessage(''), 1500);
@@ -3024,8 +3048,7 @@ healerEditor.config            - Aktuelle Werte zeigen
         }
       }
 
-      gameState.score -= cost;
-      setScore(gameState.score);
+      addScore(-cost);
 
       const building = createGuineaPigHouse(type);
       building.position.set(x, 0, z);
@@ -3158,11 +3181,10 @@ healerEditor.config            - Aktuelle Werte zeigen
       }
     };
     window.gameBreed = () => {
-      if (gameState.score >= 15) {
+      if (getSafeScore() >= 15) {
         const nearest = findNearestPartner();
         if (nearest && nearest.dist < 3.5) {
-          gameState.score -= 15;
-          setScore(gameState.score);
+          addScore(-15);
 
           const heroType = heroTypes[Math.floor(Math.random() * heroTypes.length)];
           let hero;
@@ -3304,13 +3326,14 @@ healerEditor.config            - Aktuelle Werte zeigen
       if (gameState.wave >= WAVES.length) {
         setVictory(true);
         // Award skill points
-        const earnedPoints = Math.floor(gameState.score / 5) + gameState.wave * 10;
+        const safeScore = getSafeScore();
+        const earnedPoints = Math.floor(safeScore / 5) + gameState.wave * 10;
         setMeta(prev => ({
           ...prev,
           skillPoints: prev.skillPoints + earnedPoints,
           bestWave: Math.max(prev.bestWave, gameState.wave),
           totalGames: prev.totalGames + 1,
-          totalCarrots: prev.totalCarrots + gameState.score,
+          totalCarrots: prev.totalCarrots + safeScore,
         }));
         setMessage(`🏆 SIEG! +${earnedPoints} Skillpunkte!`);
       } else {
@@ -3404,7 +3427,8 @@ healerEditor.config            - Aktuelle Werte zeigen
           effects.push(...poisonEffect);
 
           if (gameState.baseHealth <= 0) {
-            const earnedPoints = Math.floor(gameState.score / 10) + gameState.wave * 5;
+            const safeScore = getSafeScore();
+            const earnedPoints = Math.floor(safeScore / 10) + gameState.wave * 5;
             setMeta(prev => ({
               ...prev,
               skillPoints: prev.skillPoints + earnedPoints,
@@ -3590,7 +3614,7 @@ healerEditor.config            - Aktuelle Werte zeigen
             Math.pow(player.position.z - p.position.z, 2)
           );
           if (data.heartIndicator) {
-            data.heartIndicator.visible = gameState.score >= 15 && pdist < 4;
+            data.heartIndicator.visible = getSafeScore() >= 15 && pdist < 4;
             if (data.heartIndicator.visible) {
               data.heartIndicator.position.y = 1.2 + Math.sin(time * 3) * 0.1;
             }
@@ -3636,8 +3660,7 @@ healerEditor.config            - Aktuelle Werte zeigen
             const comboMultiplier = 1 + Math.min(gameState.combo, 10) * 0.1;
             const diffMod = DIFFICULTY_MODS[difficulty] || DIFFICULTY_MODS.normal;
             const value = Math.floor(carrot.userData.value * comboMultiplier * diffMod.carrotValue);
-            gameState.score += value;
-            setScore(gameState.score);
+            addScore(value);
             soundSystem.collect();
 
             // Special effects
@@ -3724,8 +3747,7 @@ healerEditor.config            - Aktuelle Werte zeigen
               collector.rotation.y = Math.atan2(-dz, dx);
             } else {
               // Deposit
-              gameState.score += data.carryingCarrots;
-              setScore(gameState.score);
+              addScore(data.carryingCarrots);
               data.carryingCarrots = 0;
               data.state = 'seeking';
             }
@@ -3980,8 +4002,7 @@ healerEditor.config            - Aktuelle Werte zeigen
             ignoreCastle: false,
           });
           if (d <= 1.4) {
-            gameState.score += data.carryingCarrots || 0;
-            setScore(gameState.score);
+            addScore(data.carryingCarrots);
             data.carryingCarrots = 0;
             data.state = 'seeking';
             data.inHut = true;
@@ -4105,8 +4126,12 @@ healerEditor.config            - Aktuelle Werte zeigen
           }
 
           // Attack distance depends on target type
-          const attackDist = data.targetType === 'defender' ? 1.8 :
-                            data.targetBuilding ? 2.5 : 5;
+          const baseAttackDist = mainBurrow?.userData?.collisionRadius
+            ? mainBurrow.userData.collisionRadius + UNIT_COLLISION_RADIUS.enemy + 0.4
+            : 5;
+          const attackDist = data.targetType === 'defender'
+            ? 1.8
+            : (data.targetBuilding ? 2.5 : Math.max(5, baseAttackDist));
           
           if (dist > attackDist) {
             // A* Pathfinding for intelligent wall navigation
@@ -4340,7 +4365,8 @@ healerEditor.config            - Aktuelle Werte zeigen
 
                 if (gameState.baseHealth <= 0) {
                   // Game over - award partial points
-                  const earnedPoints = Math.floor(gameState.score / 10) + gameState.wave * 5;
+                  const safeScore = getSafeScore();
+                  const earnedPoints = Math.floor(safeScore / 10) + gameState.wave * 5;
                   setMeta(prev => ({
                     ...prev,
                     skillPoints: prev.skillPoints + earnedPoints,
@@ -4732,8 +4758,7 @@ healerEditor.config            - Aktuelle Werte zeigen
 
             scene.remove(enemy);
             enemies.splice(i, 1);
-            gameState.score += reward;
-            setScore(gameState.score);
+            addScore(reward);
 
             // Combo visual at kill location
             if (gameState.combo >= 3) {
