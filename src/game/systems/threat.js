@@ -158,7 +158,10 @@ export function selectTarget(enemy, defenders, buildings) {
       if (dist < 25) {
         // Prefer current target
         const isCurrentTarget = data.targetBuilding === b
-        const basePriority = isCurrentTarget ? 50 : 30
+        let basePriority = isCurrentTarget ? 50 : 30
+        if (data.priorityTargets?.includes(b.userData?.type)) {
+          basePriority += 20
+        }
         candidates.push({
           target: b,
           type: 'building',

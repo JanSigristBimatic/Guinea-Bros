@@ -80,13 +80,14 @@ export class PathfindingSystem {
   }
 
   // Generate cache key from start and end positions
-  getCacheKey(startGx, startGz, endGx, endGz) {
-    return `${startGx},${startGz}->${endGx},${endGz}`
+  getCacheKey(startGx, startGz, endGx, endGz, options = {}) {
+    const gateKey = options.allowGate ? 'g1' : 'g0'
+    return `${startGx},${startGz}->${endGx},${endGz}|${gateKey}`
   }
 
   // Get cached path if valid
-  getCachedPath(startGx, startGz, endGx, endGz) {
-    const key = this.getCacheKey(startGx, startGz, endGx, endGz)
+  getCachedPath(startGx, startGz, endGx, endGz, options = {}) {
+    const key = this.getCacheKey(startGx, startGz, endGx, endGz, options)
     const cached = this.pathCache.get(key)
     if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
       return cached.path
@@ -95,8 +96,8 @@ export class PathfindingSystem {
   }
 
   // Cache a path
-  cachePath(startGx, startGz, endGx, endGz, path) {
-    const key = this.getCacheKey(startGx, startGz, endGx, endGz)
+  cachePath(startGx, startGz, endGx, endGz, path, options = {}) {
+    const key = this.getCacheKey(startGx, startGz, endGx, endGz, options)
     this.pathCache.set(key, {
       path: path,
       timestamp: Date.now()
@@ -120,12 +121,23 @@ export class PathfindingSystem {
   }
 
   // Check if a grid cell is walkable
-  isWalkable(gx, gz) {
-    return !this.wallGrid.hasWall(gx, gz)
+  isWalkable(gx, gz, options = {}) {
+    if (this.wallGrid.isBlockedCell && this.wallGrid.isBlockedCell(gx, gz)) {
+      return false
+    }
+
+    const cell = this.wallGrid.getWall(gx, gz)
+    if (!cell) return true
+
+    if (options.allowGate && cell.segmentType === 'gate') {
+      return true
+    }
+
+    return false
   }
 
   // Get walkable neighbors (4-directional)
-  getNeighbors(gx, gz) {
+  getNeighbors(gx, gz, options = {}) {
     const neighbors = []
     const directions = [
       { dx: 0, dz: 1 },   // North
@@ -137,7 +149,7 @@ export class PathfindingSystem {
     for (const { dx, dz } of directions) {
       const nx = gx + dx
       const nz = gz + dz
-      if (this.isWalkable(nx, nz)) {
+      if (this.isWalkable(nx, nz, options)) {
         neighbors.push({ gx: nx, gz: nz })
       }
     }
@@ -146,8 +158,8 @@ export class PathfindingSystem {
   }
 
   // Find nearest walkable cell to a blocked position
-  findNearestWalkable(gx, gz, maxRadius = 5) {
-    if (this.isWalkable(gx, gz)) {
+  findNearestWalkable(gx, gz, maxRadius = 5, options = {}) {
+    if (this.isWalkable(gx, gz, options)) {
       return { gx, gz }
     }
 
@@ -156,7 +168,7 @@ export class PathfindingSystem {
       for (let dx = -r; dx <= r; dx++) {
         for (let dz = -r; dz <= r; dz++) {
           if (Math.abs(dx) === r || Math.abs(dz) === r) {
-            if (this.isWalkable(gx + dx, gz + dz)) {
+            if (this.isWalkable(gx + dx, gz + dz, options)) {
               return { gx: gx + dx, gz: gz + dz }
             }
           }
@@ -168,20 +180,20 @@ export class PathfindingSystem {
   }
 
   // Main A* pathfinding algorithm
-  findPath(startX, startZ, targetX, targetZ) {
+  findPath(startX, startZ, targetX, targetZ, options = {}) {
     // Convert world to grid coordinates
     const start = this.wallGrid.worldToGrid(startX, startZ)
     let goal = this.wallGrid.worldToGrid(targetX, targetZ)
 
     // Check cache first
-    const cached = this.getCachedPath(start.gx, start.gz, goal.gx, goal.gz)
+    const cached = this.getCachedPath(start.gx, start.gz, goal.gx, goal.gz, options)
     if (cached) {
       return cached
     }
 
     // If goal is blocked, find nearest walkable
-    if (!this.isWalkable(goal.gx, goal.gz)) {
-      const nearest = this.findNearestWalkable(goal.gx, goal.gz)
+    if (!this.isWalkable(goal.gx, goal.gz, options)) {
+      const nearest = this.findNearestWalkable(goal.gx, goal.gz, 5, options)
       if (!nearest) {
         return null // No path possible
       }
@@ -190,8 +202,8 @@ export class PathfindingSystem {
 
     // If start is blocked, find nearest walkable
     let actualStart = start
-    if (!this.isWalkable(start.gx, start.gz)) {
-      const nearest = this.findNearestWalkable(start.gx, start.gz)
+    if (!this.isWalkable(start.gx, start.gz, options)) {
+      const nearest = this.findNearestWalkable(start.gx, start.gz, 5, options)
       if (!nearest) {
         return null
       }
@@ -222,14 +234,14 @@ export class PathfindingSystem {
       // Goal reached?
       if (current.gx === goal.gx && current.gz === goal.gz) {
         const path = this.reconstructPath(current)
-        this.cachePath(start.gx, start.gz, goal.gx, goal.gz, path)
+        this.cachePath(start.gx, start.gz, goal.gx, goal.gz, path, options)
         return path
       }
 
       closedSet.add(currentKey)
 
       // Process neighbors
-      for (const neighbor of this.getNeighbors(current.gx, current.gz)) {
+      for (const neighbor of this.getNeighbors(current.gx, current.gz, options)) {
         const neighborKey = this.wallGrid.getKey(neighbor.gx, neighbor.gz)
 
         if (closedSet.has(neighborKey)) continue
@@ -255,7 +267,7 @@ export class PathfindingSystem {
     }
 
     // No path found - cache the null result too
-    this.cachePath(start.gx, start.gz, goal.gx, goal.gz, null)
+    this.cachePath(start.gx, start.gz, goal.gx, goal.gz, null, options)
     return null
   }
 
@@ -274,7 +286,7 @@ export class PathfindingSystem {
   }
 
   // Check if there's a direct line of sight (no walls blocking)
-  hasLineOfSight(startX, startZ, endX, endZ) {
+  hasLineOfSight(startX, startZ, endX, endZ, options = {}) {
     const startGrid = this.wallGrid.worldToGrid(startX, startZ)
     const endGrid = this.wallGrid.worldToGrid(endX, endZ)
 
@@ -289,7 +301,7 @@ export class PathfindingSystem {
 
     while (true) {
       // Check current cell (skip start position)
-      if ((gx !== startGrid.gx || gz !== startGrid.gz) && this.wallGrid.hasWall(gx, gz)) {
+      if ((gx !== startGrid.gx || gz !== startGrid.gz) && !this.isWalkable(gx, gz, options)) {
         return false
       }
 
@@ -311,7 +323,7 @@ export class PathfindingSystem {
   }
 
   // Smooth path by removing unnecessary waypoints
-  smoothPath(path) {
+  smoothPath(path, options = {}) {
     if (!path || path.length < 3) return path
 
     const smoothed = [path[0]]
@@ -321,7 +333,7 @@ export class PathfindingSystem {
       // Try to skip ahead to furthest visible point
       let furthest = current + 1
       for (let i = current + 2; i < path.length; i++) {
-        if (this.hasLineOfSight(path[current].x, path[current].z, path[i].x, path[i].z)) {
+        if (this.hasLineOfSight(path[current].x, path[current].z, path[i].x, path[i].z, options)) {
           furthest = i
         }
       }
@@ -333,10 +345,10 @@ export class PathfindingSystem {
   }
 
   // Find path with smoothing for more natural movement
-  findSmoothPath(startX, startZ, targetX, targetZ) {
-    const path = this.findPath(startX, startZ, targetX, targetZ)
+  findSmoothPath(startX, startZ, targetX, targetZ, options = {}) {
+    const path = this.findPath(startX, startZ, targetX, targetZ, options)
     if (!path) return null
-    return this.smoothPath(path)
+    return this.smoothPath(path, options)
   }
 }
 

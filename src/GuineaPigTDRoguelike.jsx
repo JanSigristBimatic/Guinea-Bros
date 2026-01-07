@@ -15,7 +15,7 @@ import { createWallSegment, updateWallSegmentGeometry } from './game/entities/Bu
 import soundSystem from './audio/SoundSystem.js';
 import { saveToIndexedDB, loadFromIndexedDB, migrateFromLocalStorage, STORAGE_KEYS } from './storage/indexedDB.js';
 import { DEFAULT_SKILLS, DEFAULT_META, SKILL_TIERS } from './constants/skills.js';
-import { WAVE_CONFIGS } from './constants/enemies.js';
+import { WAVE_CONFIGS, ENEMY_BEHAVIOR } from './constants/enemies.js';
 
 // ============== GLB MODEL POSITIONING HELPER ==============
 /**
@@ -536,13 +536,16 @@ export default function GuineaPigTDRoguelike() {
       group.add(hpBar);
       group.userData.hpBar = hpBar;
 
-      const updateMainUI = (baseHeight) => {
+      const updateMainUI = (baseHeight, footprintRadius = null) => {
         const poleCenter = baseHeight + 1.0;
         pole.position.set(0, poleCenter, 0);
         flag.position.y = baseHeight + 1.7;
         hpBg.position.set(0, baseHeight + 3.0, 0);
         hpBar.position.set(0, baseHeight + 3.02, 0.02);
-        const radius = Math.max(3.0, baseHeight * 0.7);
+        const baseRadius = Number.isFinite(footprintRadius)
+          ? Math.max(3.0, footprintRadius)
+          : Math.max(3.0, baseHeight * 0.7);
+        const radius = Math.min(baseRadius, 4.8);
         group.userData.collisionRadius = radius;
         updateCastleBlockedCells(radius);
       };
@@ -567,7 +570,8 @@ export default function GuineaPigTDRoguelike() {
           });
           group.add(model);
           fallback.visible = false;
-          updateMainUI(info.size.y);
+          const footprintRadius = Math.max(info.size.x, info.size.z) * 0.4;
+          updateMainUI(info.size.y, footprintRadius);
         },
         undefined,
         (error) => {
@@ -724,6 +728,7 @@ export default function GuineaPigTDRoguelike() {
         targetPos: new THREE.Vector3(),
         waitTime: 0,
         carryingCarrots: 0,
+        carryingCount: 0,
         maxCarry: 2 + getSkillEffect('collectorCapacity'),
         speed: type === 'collector' ? (0.04 * (1 + getSkillEffect('collectorSpeed') / 100)) : 0.025,
         attackRange: type === 'bomber' ? 7 : (type === 'assassin' ? 3 : 5),
@@ -1113,6 +1118,24 @@ healerEditor.config            - Aktuelle Werte zeigen
     }
 
     // ============== ENEMIES ==============
+    function applyEnemyBehavior(data, behaviorKey) {
+      const behavior = ENEMY_BEHAVIOR[behaviorKey];
+      if (!data || !behavior) return;
+      data.threatTable = new Map();
+      data.currentTarget = null;
+      data.targetType = 'base';
+      data.isRetaliating = false;
+      data.originalTarget = null;
+      data.lastDamageSource = null;
+      data.lastDamageTime = 0;
+      data.aggroRange = behavior.aggroRange;
+      data.leashRange = behavior.leashRange;
+      data.defenderFocus = behavior.defenderFocus;
+      data.threatMultiplier = behavior.threatMultiplier;
+      data.retaliationChance = behavior.retaliationChance;
+      data.priorityTargets = behavior.priorityTargets || [];
+    }
+
     function createFox(isBoss = false) {
       const group = new THREE.Group();
       const scale = isBoss ? 2.5 : 1.1;
@@ -1131,6 +1154,7 @@ healerEditor.config            - Aktuelle Werte zeigen
         isBoss,
         targetBuilding: null,
       };
+      applyEnemyBehavior(group.userData, isBoss ? 'boss_fox' : 'fox');
 
       const bodyGeo = new THREE.SphereGeometry(0.5, 16, 12);
       bodyGeo.scale(1.6, 0.9, 0.9);
@@ -1217,6 +1241,7 @@ healerEditor.config            - Aktuelle Werte zeigen
         isBoss,
         targetBuilding: null,
       };
+      applyEnemyBehavior(group.userData, isBoss ? 'boss_raven' : 'raven');
 
       const bodyGeo = new THREE.SphereGeometry(0.3, 12, 10);
       bodyGeo.scale(1.4, 1, 1);
@@ -1285,6 +1310,7 @@ healerEditor.config            - Aktuelle Werte zeigen
         targetBuilding: null,
         canPoison: true,
       };
+      applyEnemyBehavior(group.userData, 'snake');
 
       // Snake body segments
       for (let i = 0; i < 5; i++) {
@@ -1868,6 +1894,8 @@ healerEditor.config            - Aktuelle Werte zeigen
       wave: 0,
       baseHealth: baseHealthValue,
       maxBaseHealth: baseHealthValue,
+      gameOver: false,
+      victory: false,
       score: initialScore,
       time: 0,
       dayDuration: dayDurationValue,
@@ -1930,6 +1958,7 @@ healerEditor.config            - Aktuelle Werte zeigen
       targetPos: new THREE.Vector3(),
       waitTime: 0,
       carryingCarrots: 0,
+      carryingCount: 0,
       maxCarry: 2 + getSkillEffect('collectorCapacity'),
       speed: 0.025,
       attackRange: 5,
@@ -2146,6 +2175,145 @@ healerEditor.config            - Aktuelle Werte zeigen
       return d;
     }
 
+    function getBuildingApproachDistance(building, unitRadius, extra = 0.4) {
+      const radius = building?.userData?.collisionRadius;
+      if (Number.isFinite(radius)) {
+        return radius + unitRadius + extra;
+      }
+      return 1.5 + unitRadius + extra;
+    }
+
+    function moveUnitWithPathfinding(unit, target, speed, options = {}) {
+      if (!unit || !target) return 0;
+
+      const {
+        allowGate = false,
+        stopDistance = 1.0,
+        maxPathAge = 60,
+        setRotation = true,
+        allowFallback = true,
+      } = options;
+
+      const data = unit.userData || {};
+      data.navNoPath = false;
+      data.navNoPathTargetKey = null;
+
+      const dx = target.x - unit.position.x;
+      const dz = target.z - unit.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist <= stopDistance || dist === 0) return dist;
+
+      const pathfinding = pathfindingRef.current;
+      if (!pathfinding) {
+        unit.position.x += (dx / dist) * speed;
+        unit.position.z += (dz / dist) * speed;
+        if (setRotation) {
+          unit.rotation.y = Math.atan2(-dz, dx);
+        }
+        return dist;
+      }
+      const wallGrid = wallGridRef.current;
+      const targetGrid = wallGrid ? wallGrid.worldToGrid(target.x, target.z) : null;
+      const targetKey = targetGrid
+        ? `${targetGrid.gx},${targetGrid.gz}`
+        : `${Math.round(target.x)},${Math.round(target.z)}`;
+      const targetChanged = data.navTargetKey !== targetKey;
+      const allowGateChanged = data.navAllowGate !== allowGate;
+
+      const hasDirectPath = pathfinding.hasLineOfSight(
+        unit.position.x, unit.position.z, target.x, target.z, { allowGate }
+      );
+
+      if (hasDirectPath) {
+        unit.position.x += (dx / dist) * speed;
+        unit.position.z += (dz / dist) * speed;
+        if (setRotation) {
+          unit.rotation.y = Math.atan2(-dz, dx);
+        }
+        data.navPath = null;
+        data.navPathAge = 0;
+        data.navTargetKey = targetKey;
+        data.navAllowGate = allowGate;
+        return dist;
+      }
+
+      if (!data.navPath || data.navPathInvalid || data.navPathAge > maxPathAge || targetChanged || allowGateChanged) {
+        data.navPath = pathfinding.findSmoothPath(
+          unit.position.x, unit.position.z, target.x, target.z, { allowGate }
+        );
+        data.navPathIndex = 0;
+        data.navPathAge = 0;
+        data.navPathInvalid = false;
+      }
+
+      data.navPathAge = (data.navPathAge || 0) + 1;
+      data.navTargetKey = targetKey;
+      data.navAllowGate = allowGate;
+
+      let moveX = 0;
+      let moveZ = 0;
+
+      if (!data.navPath || data.navPath.length === 0) {
+        data.navNoPath = true;
+        data.navNoPathTargetKey = targetKey;
+        if (!allowFallback) {
+          return dist;
+        }
+      }
+
+      if (data.navPath && data.navPath.length > 0) {
+        let waypoint = data.navPath[data.navPathIndex] || data.navPath[0];
+
+        while (data.navPathIndex < data.navPath.length - 1) {
+          const wdx = waypoint.x - unit.position.x;
+          const wdz = waypoint.z - unit.position.z;
+          const wDist = Math.sqrt(wdx * wdx + wdz * wdz);
+          if (wDist < 0.8) {
+            data.navPathIndex += 1;
+            waypoint = data.navPath[data.navPathIndex];
+          } else {
+            break;
+          }
+        }
+
+        const wdx = waypoint.x - unit.position.x;
+        const wdz = waypoint.z - unit.position.z;
+        const wDist = Math.sqrt(wdx * wdx + wdz * wdz);
+
+        if (wDist > 0.05) {
+          moveX = (wdx / wDist) * speed;
+          moveZ = (wdz / wDist) * speed;
+        }
+
+        if (data.navPathIndex >= data.navPath.length - 1 && wDist < 0.8) {
+          data.navPath = null;
+        }
+      } else {
+        moveX = (dx / dist) * speed;
+        moveZ = (dz / dist) * speed;
+      }
+
+      if (moveX !== 0 || moveZ !== 0) {
+        unit.position.x += moveX;
+        unit.position.z += moveZ;
+        if (setRotation) {
+          unit.rotation.y = Math.atan2(-moveZ, moveX);
+        }
+      }
+
+      return dist;
+    }
+
+    function isPathReachable(from, to, options = {}) {
+      const pathfinding = pathfindingRef.current;
+      if (!pathfinding || !from || !to) return true;
+      const hasDirectPath = pathfinding.hasLineOfSight(
+        from.x, from.z, to.x, to.z, options
+      );
+      if (hasDirectPath) return true;
+      return !!pathfinding.findPath(from.x, from.z, to.x, to.z, options);
+    }
+
     function createPreviewGhost(type) {
       if (previewGhost) {
         scene.remove(previewGhost);
@@ -2258,6 +2426,9 @@ healerEditor.config            - Aktuelle Werte zeigen
     }
 
     const isWallLikeType = (type) => type === 'wall' || type === 'gate';
+    const isPlacementRestrictedToRing = (type) => !(
+      type === 'wall' || type === 'gate' || type === 'tower'
+    );
 
     function getGateRotationForGrid(gx, gz, fallbackRotation = 0) {
       const wallGrid = wallGridRef.current;
@@ -2281,9 +2452,12 @@ healerEditor.config            - Aktuelle Werte zeigen
       return ((snapped % 360) + 360) % 360;
     }
 
-    function checkPlacementValid(x, z, collisionRadius = 2.5) {
-      const dist = Math.sqrt(x * x + z * z);
-      if (dist < 6 || dist > 14) return false;
+    function checkPlacementValid(x, z, collisionRadius = 2.5, type = null) {
+      const buildType = type || gameRef.current?.buildMode;
+      if (isPlacementRestrictedToRing(buildType)) {
+        const dist = Math.sqrt(x * x + z * z);
+        if (dist < 6 || dist > 14) return false;
+      }
 
       for (const b of buildingObjects) {
         const dx = b.position.x - x;
@@ -2294,9 +2468,6 @@ healerEditor.config            - Aktuelle Werte zeigen
     }
 
     function checkWallPlacementValid(x, z, collisionRadius = 1.5) {
-      const dist = Math.sqrt(x * x + z * z);
-      if (dist < 6 || dist > 14) return false;
-
       for (const b of buildingObjects) {
         if (isWallLikeType(b.userData.type)) continue;
         const dx = b.position.x - x;
@@ -2423,7 +2594,8 @@ healerEditor.config            - Aktuelle Werte zeigen
           } else {
             // Regular building - place immediately
             const dist = Math.sqrt(gridX * gridX + gridZ * gridZ);
-            if (dist >= 6 && dist <= 14) {
+            const type = gameRef.current.buildMode;
+            if (!isPlacementRestrictedToRing(type) || (dist >= 6 && dist <= 14)) {
               const rotation = gameRef.current.buildRotation || 0;
               placeBuildingWithRotation(gridX, gridZ, rotation);
             }
@@ -2545,7 +2717,7 @@ healerEditor.config            - Aktuelle Werte zeigen
           createPreviewGhost(type);
         }
 
-        let isValid = checkPlacementValid(gridX, gridZ);
+        let isValid = checkPlacementValid(gridX, gridZ, 2.5, type);
         if (type === 'wall') {
           isValid = checkWallPlacementValid(gridX, gridZ, 1.5);
         } else if (type === 'gate') {
@@ -2880,7 +3052,7 @@ healerEditor.config            - Aktuelle Werte zeigen
         } else {
           // Regular building placement
           const dist = Math.sqrt(gridX * gridX + gridZ * gridZ);
-          if (dist >= 6 && dist <= 14) {
+          if (!isPlacementRestrictedToRing(type) || (dist >= 6 && dist <= 14)) {
             const rotation = gameRef.current.buildRotation || 0;
             placeBuildingWithRotation(gridX, gridZ, rotation);
           } else {
@@ -2963,13 +3135,15 @@ healerEditor.config            - Aktuelle Werte zeigen
         }
 
         // Check radial limits (6-14 units from center)
-        const dist = Math.sqrt(x * x + z * z);
-        if (dist < 6 || dist > 14) {
-          if (showMessage) {
-            setMessage('Zu nah oder zu weit vom Zentrum!');
-            setTimeout(() => setMessage(''), 1500);
+        if (isPlacementRestrictedToRing(type)) {
+          const dist = Math.sqrt(x * x + z * z);
+          if (dist < 6 || dist > 14) {
+            if (showMessage) {
+              setMessage('Zu nah oder zu weit vom Zentrum!');
+              setTimeout(() => setMessage(''), 1500);
+            }
+            return false;
           }
-          return false;
         }
 
         const cost = getBuildingCost(type);
@@ -3256,6 +3430,15 @@ healerEditor.config            - Aktuelle Werte zeigen
         p.userData.inCastle = false;
         p.visible = true;
       });
+
+      collectors.forEach(collector => {
+        collector.userData.targetCarrot = null;
+        collector.userData.noPathTimer = 0;
+        if (collector.userData.unreachableTargets) {
+          collector.userData.unreachableTargets.clear();
+        }
+      });
+
       changeWeather();
       startWave(gameState.wave);
     }
@@ -3298,6 +3481,11 @@ healerEditor.config            - Aktuelle Werte zeigen
         collector.visible = true;
         collector.userData.inHut = false;
         collector.userData.state = 'seeking';
+        collector.userData.targetCarrot = null;
+        collector.userData.noPathTimer = 0;
+        if (collector.userData.unreachableTargets) {
+          collector.userData.unreachableTargets.clear();
+        }
         if (!collector.userData.homeBuilding) {
           collector.userData.homeBuilding = findHomeBuilding('collectorHut', collector.userData.homePos);
         }
@@ -3323,7 +3511,8 @@ healerEditor.config            - Aktuelle Werte zeigen
       // Spawn more carrots
       for (let i = 0; i < 12; i++) spawnCarrot();
 
-      if (gameState.wave >= WAVES.length) {
+      if (gameState.wave >= WAVES.length && !gameState.victory) {
+        gameState.victory = true;
         setVictory(true);
         // Award skill points
         const safeScore = getSafeScore();
@@ -3354,7 +3543,7 @@ healerEditor.config            - Aktuelle Werte zeigen
       lastTime = now;
       time += dt;
 
-      if (gameOver || victory) {
+      if (gameState.gameOver || gameState.victory) {
         try {
           renderer.render(scene, camera);
         } catch (e) {
@@ -3426,7 +3615,8 @@ healerEditor.config            - Aktuelle Werte zeigen
           poisonEffect.forEach(p => scene.add(p));
           effects.push(...poisonEffect);
 
-          if (gameState.baseHealth <= 0) {
+          if (gameState.baseHealth <= 0 && !gameState.gameOver && !gameState.victory) {
+            gameState.gameOver = true;
             const safeScore = getSafeScore();
             const earnedPoints = Math.floor(safeScore / 10) + gameState.wave * 5;
             setMeta(prev => ({
@@ -3551,7 +3741,7 @@ healerEditor.config            - Aktuelle Werte zeigen
 
         // Simple bounds
         const dist = Math.sqrt(newX*newX + newZ*newZ);
-        if (dist < 35 && dist > 5) {
+        if (dist < 35) {
           player.position.x = newX;
           player.position.z = newZ;
         } else {
@@ -3592,19 +3782,16 @@ healerEditor.config            - Aktuelle Werte zeigen
           if (data.waitTime > 0) {
             data.waitTime -= dt;
           } else {
-            const dx = data.targetPos.x - p.position.x;
-            const dz = data.targetPos.z - p.position.z;
-            const d = Math.sqrt(dx*dx + dz*dz);
-            
+            const d = moveUnitWithPathfinding(p, data.targetPos, 0.02, {
+              allowGate: true,
+              stopDistance: 0.5,
+            });
+
             if (d < 0.5) {
               const angle = Math.random() * Math.PI * 2;
               const radius = 8 + Math.random() * 15;
               data.targetPos.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
               data.waitTime = 2 + Math.random() * 4;
-            } else {
-              p.position.x += (dx / d) * 0.02;
-              p.position.z += (dz / d) * 0.02;
-              p.rotation.y = Math.atan2(-dz, dx);
             }
           }
           
@@ -3696,60 +3883,121 @@ healerEditor.config            - Aktuelle Werte zeigen
         collectors.forEach(collector => {
           const data = collector.userData;
           if (!collector.visible) return;
-          
+
+          if (!data.unreachableTargets) data.unreachableTargets = new Map();
+          const isTargetBlocked = (target) => {
+            if (!target?.uuid) return false;
+            const until = data.unreachableTargets.get(target.uuid);
+            if (until && until > time) return true;
+            if (until) data.unreachableTargets.delete(target.uuid);
+            return false;
+          };
+          const markTargetBlocked = (target, seconds = 4) => {
+            if (!target?.uuid) return;
+            data.unreachableTargets.set(target.uuid, time + seconds);
+          };
+
           if (data.state === 'seeking') {
-            // Find nearest carrot
-            let nearestCarrot = null;
-            let nearestDist = Infinity;
-            carrots.forEach(c => {
-              if (c.userData.collected) return;
-              const dx = collector.position.x - c.position.x;
-              const dz = collector.position.z - c.position.z;
-              const d = Math.sqrt(dx*dx + dz*dz);
-              if (d < nearestDist) {
-                nearestDist = d;
-                nearestCarrot = c;
+            if (data.targetCarrot && (data.targetCarrot.userData.collected || isTargetBlocked(data.targetCarrot))) {
+              data.targetCarrot = null;
+            }
+
+            if (!data.targetCarrot) {
+              let nearestCarrot = null;
+              let nearestDist = Infinity;
+              carrots.forEach(c => {
+                if (c.userData.collected || isTargetBlocked(c)) return;
+                const dx = collector.position.x - c.position.x;
+                const dz = collector.position.z - c.position.z;
+                const d = Math.sqrt(dx * dx + dz * dz);
+                if (d < nearestDist) {
+                  if (!isPathReachable(collector.position, c.position, { allowGate: true })) {
+                    markTargetBlocked(c);
+                    return;
+                  }
+                  nearestDist = d;
+                  nearestCarrot = c;
+                }
+              });
+              data.targetCarrot = nearestCarrot;
+            }
+
+            if (data.targetCarrot) {
+              const target = data.targetCarrot;
+              const d = collector.position.distanceTo(target.position);
+              if (d > 1) {
+                moveUnitWithPathfinding(collector, target.position, data.speed, {
+                  allowGate: true,
+                  stopDistance: 1,
+                  allowFallback: false,
+                });
+                if (data.navNoPath) {
+                  markTargetBlocked(target);
+                  data.targetCarrot = null;
+                }
+              } else {
+                // Collect
+                target.userData.collected = true;
+                data.carryingCarrots += target.userData.value;
+                data.carryingCount = (data.carryingCount || 0) + 1;
+                scene.remove(target);
+                const idx = carrots.indexOf(target);
+                if (idx > -1) carrots.splice(idx, 1);
+                setTimeout(spawnCarrot, 3000);
+                data.targetCarrot = null;
+
+                if (data.carryingCount >= data.maxCarry) {
+                  data.state = 'returning';
+                }
               }
-            });
-            
-            if (nearestCarrot && nearestDist > 1) {
-              const dx = nearestCarrot.position.x - collector.position.x;
-              const dz = nearestCarrot.position.z - collector.position.z;
-              collector.position.x += (dx / nearestDist) * data.speed;
-              collector.position.z += (dz / nearestDist) * data.speed;
-              collector.rotation.y = Math.atan2(-dz, dx);
-            } else if (nearestCarrot && nearestDist <= 1) {
-              // Collect
-              nearestCarrot.userData.collected = true;
-              data.carryingCarrots += nearestCarrot.userData.value;
-              scene.remove(nearestCarrot);
-              const idx = carrots.indexOf(nearestCarrot);
-              if (idx > -1) carrots.splice(idx, 1);
-              setTimeout(spawnCarrot, 3000);
-              
-              if (data.carryingCarrots >= data.maxCarry) {
-                data.state = 'returning';
-              }
+            } else if (data.carryingCount > 0) {
+              data.state = 'returning';
             } else {
-              // No carrots, return if carrying any
-              if (data.carryingCarrots > 0) {
-                data.state = 'returning';
+              const homeDist = collector.position.distanceTo(data.homePos);
+              if (homeDist > 4) {
+                moveUnitWithPathfinding(collector, data.homePos, data.speed * 0.7, {
+                  allowGate: true,
+                  stopDistance: 2.2,
+                  allowFallback: false,
+                });
               }
             }
           } else if (data.state === 'returning') {
-            const dx = data.homePos.x - collector.position.x;
-            const dz = data.homePos.z - collector.position.z;
-            const d = Math.sqrt(dx*dx + dz*dz);
-            
-            if (d > 2) {
-              collector.position.x += (dx / d) * data.speed;
-              collector.position.z += (dz / d) * data.speed;
-              collector.rotation.y = Math.atan2(-dz, dx);
+            data.noPathTimer = data.noPathTimer || 0;
+            const depositDist = getBuildingApproachDistance(
+              data.homeBuilding,
+              UNIT_COLLISION_RADIUS.collector,
+              0.2
+            );
+            moveUnitWithPathfinding(collector, data.homePos, data.speed, {
+              allowGate: true,
+              stopDistance: depositDist,
+              allowFallback: false,
+            });
+
+            if (data.navNoPath) {
+              data.noPathTimer += dt;
+              if (data.noPathTimer > 2.5) {
+                addScore(data.carryingCarrots);
+                data.carryingCarrots = 0;
+                data.carryingCount = 0;
+                data.state = 'seeking';
+                data.targetCarrot = null;
+                data.noPathTimer = 0;
+              }
             } else {
+              data.noPathTimer = 0;
+            }
+
+            const d = collector.position.distanceTo(data.homePos);
+            if (d <= depositDist) {
               // Deposit
               addScore(data.carryingCarrots);
               data.carryingCarrots = 0;
+              data.carryingCount = 0;
               data.state = 'seeking';
+              data.targetCarrot = null;
+              data.noPathTimer = 0;
             }
           }
           
@@ -3812,11 +4060,10 @@ healerEditor.config            - Aktuelle Werte zeigen
               if (nearestTree) {
                 if (nearestDist > 2) {
                   // Move toward tree
-                  const dx = nearestTree.position.x - beaver.position.x;
-                  const dz = nearestTree.position.z - beaver.position.z;
-                  beaver.position.x += (dx / nearestDist) * data.speed;
-                  beaver.position.z += (dz / nearestDist) * data.speed;
-                  beaver.rotation.y = Math.atan2(-dz, dx);
+                  moveUnitWithPathfinding(beaver, nearestTree.position, data.speed, {
+                    allowGate: true,
+                    stopDistance: 2,
+                  });
                 } else {
                   // Harvest wood
                   if (nearestTree.userData.woodAmount > 0) {
@@ -3841,10 +4088,16 @@ healerEditor.config            - Aktuelle Werte zeigen
               const dz = target.position.z - beaver.position.z;
               const d = Math.sqrt(dx * dx + dz * dz);
 
-              if (d > 2.5) {
-                beaver.position.x += (dx / d) * data.speed;
-                beaver.position.z += (dz / d) * data.speed;
-                beaver.rotation.y = Math.atan2(-dz, dx);
+              const repairDist = getBuildingApproachDistance(
+                target,
+                UNIT_COLLISION_RADIUS.beaver,
+                0.4
+              );
+              if (d > repairDist) {
+                moveUnitWithPathfinding(beaver, target.position, data.speed, {
+                  allowGate: true,
+                  stopDistance: repairDist,
+                });
               } else if (data.carryingWood > 0) {
                 // Repair: 25 HP per wood
                 const repairAmount = 25;
@@ -3875,10 +4128,16 @@ healerEditor.config            - Aktuelle Werte zeigen
             const dz = data.homePos.z - beaver.position.z;
             const d = Math.sqrt(dx * dx + dz * dz);
 
-            if (d > 2) {
-              beaver.position.x += (dx / d) * data.speed;
-              beaver.position.z += (dz / d) * data.speed;
-              beaver.rotation.y = Math.atan2(-dz, dx);
+            const depositDist = getBuildingApproachDistance(
+              data.homeBuilding,
+              UNIT_COLLISION_RADIUS.beaver,
+              0.2
+            );
+            if (d > depositDist) {
+              moveUnitWithPathfinding(beaver, data.homePos, data.speed, {
+                allowGate: true,
+                stopDistance: depositDist,
+              });
             } else {
               // Deposit wood
               gameState.wood = (gameState.wood || 0) + data.carryingWood;
@@ -3957,14 +4216,22 @@ healerEditor.config            - Aktuelle Werte zeigen
 
         if (!player.userData.inCastle) {
           player.visible = true;
-          moveUnitToward(player, castlePos, 0.08, 1.2);
+          moveUnitWithPathfinding(player, castlePos, 0.08, {
+            allowGate: true,
+            stopDistance: 1.2,
+          });
           resolveUnitBuildingCollisions(player, {
             unitRadius: UNIT_COLLISION_RADIUS.player,
             allowBuilding: (building) => building.userData.type === 'gate',
             ignoreCastle: true,
           });
+          const enterDist = getBuildingApproachDistance(
+            mainBurrow,
+            UNIT_COLLISION_RADIUS.player,
+            0.6
+          );
           const d = player.position.distanceTo(castlePos);
-          if (d <= 1.4) {
+          if (d <= enterDist) {
             player.visible = false;
             player.userData.inCastle = true;
             player.userData.velocityX = 0;
@@ -3975,14 +4242,22 @@ healerEditor.config            - Aktuelle Werte zeigen
         partners.forEach(p => {
           if (p.userData.inCastle) return;
           p.visible = true;
-          moveUnitToward(p, castlePos, 0.06, 1.2);
+          moveUnitWithPathfinding(p, castlePos, 0.06, {
+            allowGate: true,
+            stopDistance: 1.2,
+          });
           resolveUnitBuildingCollisions(p, {
             unitRadius: UNIT_COLLISION_RADIUS.partner,
             allowBuilding: (building) => building.userData.type === 'gate',
             ignoreCastle: true,
           });
+          const enterDist = getBuildingApproachDistance(
+            mainBurrow,
+            UNIT_COLLISION_RADIUS.partner,
+            0.6
+          );
           const d = p.position.distanceTo(castlePos);
-          if (d <= 1.4) {
+          if (d <= enterDist) {
             p.visible = false;
             p.userData.inCastle = true;
           }
@@ -3994,19 +4269,48 @@ healerEditor.config            - Aktuelle Werte zeigen
             collector.visible = false;
             return;
           }
+          data.targetCarrot = null;
+          data.noPathTimer = data.noPathTimer || 0;
           collector.visible = true;
-          const d = moveUnitToward(collector, data.homePos, data.speed, 1.2);
+          const hutDist = getBuildingApproachDistance(
+            data.homeBuilding,
+            UNIT_COLLISION_RADIUS.collector,
+            0.3
+          );
+          moveUnitWithPathfinding(collector, data.homePos, data.speed, {
+            allowGate: true,
+            stopDistance: hutDist,
+            allowFallback: false,
+          });
+          if (data.navNoPath) {
+            data.noPathTimer += dt;
+            if (data.noPathTimer > 2.5) {
+              addScore(data.carryingCarrots);
+              data.carryingCarrots = 0;
+              data.carryingCount = 0;
+              data.state = 'seeking';
+              data.inHut = true;
+              collector.visible = false;
+              data.noPathTimer = 0;
+              return;
+            }
+          } else {
+            data.noPathTimer = 0;
+          }
           resolveUnitBuildingCollisions(collector, {
             unitRadius: UNIT_COLLISION_RADIUS.collector,
             allowBuilding: (building) => building.userData.type === 'gate' || building === data.homeBuilding,
             ignoreCastle: false,
           });
-          if (d <= 1.4) {
+          const d = collector.position.distanceTo(data.homePos);
+          if (d <= hutDist) {
             addScore(data.carryingCarrots);
             data.carryingCarrots = 0;
+            data.carryingCount = 0;
             data.state = 'seeking';
             data.inHut = true;
             collector.visible = false;
+            data.noPathTimer = 0;
           }
         });
 
@@ -4017,13 +4321,22 @@ healerEditor.config            - Aktuelle Werte zeigen
             return;
           }
           beaver.visible = true;
-          const d = moveUnitToward(beaver, data.homePos, data.speed, 1.2);
+          const hutDist = getBuildingApproachDistance(
+            data.homeBuilding,
+            UNIT_COLLISION_RADIUS.beaver,
+            0.3
+          );
+          moveUnitWithPathfinding(beaver, data.homePos, data.speed, {
+            allowGate: true,
+            stopDistance: hutDist,
+          });
           resolveUnitBuildingCollisions(beaver, {
             unitRadius: UNIT_COLLISION_RADIUS.beaver,
             allowBuilding: (building) => building.userData.type === 'gate' || building === data.homeBuilding,
             ignoreCastle: false,
           });
-          if (d <= 1.4) {
+          const d = beaver.position.distanceTo(data.homePos);
+          if (d <= hutDist) {
             gameState.wood = (gameState.wood || 0) + (data.carryingWood || 0);
             setWood(gameState.wood);
             data.carryingWood = 0;
@@ -4363,7 +4676,8 @@ healerEditor.config            - Aktuelle Werte zeigen
                   setMessage('🐍 Basis vergiftet!');
                 }
 
-                if (gameState.baseHealth <= 0) {
+                if (gameState.baseHealth <= 0 && !gameState.gameOver && !gameState.victory) {
+                  gameState.gameOver = true;
                   // Game over - award partial points
                   const safeScore = getSafeScore();
                   const earnedPoints = Math.floor(safeScore / 10) + gameState.wave * 5;
@@ -4390,8 +4704,9 @@ healerEditor.config            - Aktuelle Werte zeigen
         // Defender AI
         const rageBonus = gameState.rageActive ? (1 + getSkillEffect('rageBonus') / 100) : 1;
         const critChance = getSkillEffect('critChance') / 100;
-        const patrolRadius = 12; // Patrol within defense circle
-        const patrolMinRadius = 6;
+        const isNight = gameState.phase === 'night';
+        const patrolRadius = isNight ? 12 : 9; // Patrol within defense circle
+        const patrolMinRadius = isNight ? 6 : 4;
 
         defenders.forEach(defender => {
           if (!defender.userData.placed) return;
@@ -4411,20 +4726,40 @@ healerEditor.config            - Aktuelle Werte zeigen
           if (data.patrolWait === undefined) data.patrolWait = 0;
 
           let attackRange = data.attackRange;
-          const sightRange = attackRange * 2.5; // Can see enemies further than attack range
+          const sightRange = attackRange * (isNight ? 2.8 : 2.2); // Can see enemies further than attack range
 
-          // Find nearest enemy in sight range
-          let nearestEnemy = null;
-          let nearestDist = Infinity;
+          if (!data.unreachableTargets) data.unreachableTargets = new Map();
+          const isEnemyBlocked = (enemy) => {
+            if (!enemy?.uuid) return false;
+            const until = data.unreachableTargets.get(enemy.uuid);
+            if (until && until > time) return true;
+            if (until) data.unreachableTargets.delete(enemy.uuid);
+            return false;
+          };
+
+          const candidates = [];
           enemies.forEach(enemy => {
             const dx = defender.position.x - enemy.position.x;
             const dz = defender.position.z - enemy.position.z;
             const d = Math.sqrt(dx * dx + dz * dz);
-            if (d < nearestDist && d < sightRange) {
-              nearestDist = d;
-              nearestEnemy = enemy;
+            if (d < sightRange && !isEnemyBlocked(enemy)) {
+              candidates.push({ enemy, dist: d });
             }
           });
+
+          candidates.sort((a, b) => a.dist - b.dist);
+
+          let nearestEnemy = null;
+          let nearestDist = Infinity;
+          for (const candidate of candidates) {
+            if (isPathReachable(defender.position, candidate.enemy.position, { allowGate: true })) {
+              nearestEnemy = candidate.enemy;
+              nearestDist = candidate.dist;
+              break;
+            }
+            data.unreachableTargets.set(candidate.enemy.uuid, time + 2.5);
+          }
+          data.navNoPath = false;
 
           if (nearestEnemy) {
             const dx = nearestEnemy.position.x - defender.position.x;
@@ -4440,15 +4775,20 @@ healerEditor.config            - Aktuelle Werte zeigen
 
             // Move towards enemy if not in attack range
             if (nearestDist > attackRange * 0.8) {
-              const moveSpeed = data.speed * 1.5;
-              const dirX = dx / nearestDist;
-              const dirZ = dz / nearestDist;
-              defender.position.x += dirX * moveSpeed;
-              defender.position.z += dirZ * moveSpeed;
+              const moveSpeed = data.speed * (isNight ? 1.5 : 1.2);
+              moveUnitWithPathfinding(defender, nearestEnemy.position, moveSpeed, {
+                allowGate: true,
+                stopDistance: attackRange * 0.8,
+                setRotation: false,
+                allowFallback: false,
+              });
+              if (data.navNoPath) {
+                data.unreachableTargets.set(nearestEnemy.uuid, time + 2.5);
+              }
             }
 
             // Attack if in range
-            if (nearestDist < attackRange && data.attackCooldown <= 0) {
+            if (!data.navNoPath && nearestDist < attackRange && data.attackCooldown <= 0) {
               data.attackCooldown = data.type === 'bomber' ? 2.5 : (data.type === 'assassin' ? 0.8 : 1.2);
 
               let damage = data.attackDamage * rageBonus;
@@ -4469,6 +4809,7 @@ healerEditor.config            - Aktuelle Werte zeigen
                   false
                 );
                 bomb.userData.targetEnemies = true;
+                bomb.userData.source = defender;
                 scene.add(bomb);
                 thrownBombs.push(bomb);
 
@@ -4483,11 +4824,12 @@ healerEditor.config            - Aktuelle Werte zeigen
               } else {
                 nearestEnemy.userData.health -= damage;
                 effects.push(...createDamageNumber(nearestEnemy.position, damage, wasCrit));
+                addThreat(nearestEnemy, defender, damage * THREAT_CONFIG.baseDamageThreat);
               }
             }
 
             // Abilities
-            if (data.abilityCooldown <= 0) {
+            if (!data.navNoPath && data.abilityCooldown <= 0) {
               data.abilityCooldown = 6;
 
               if (data.type === 'tunneler') {
@@ -4506,11 +4848,14 @@ healerEditor.config            - Aktuelle Werte zeigen
                 effects.push(...createExplosion(nearestEnemy.position, 0x4B0082));
               } else if (data.type === 'tank') {
                 // Taunt - all nearby enemies target this defender
+                data.isTaunting = true;
+                data.tauntDuration = 4;
                 enemies.forEach(e => {
                   const edx = defender.position.x - e.position.x;
                   const edz = defender.position.z - e.position.z;
                   if (Math.sqrt(edx*edx + edz*edz) < 8) {
                     e.userData.targetBuilding = null;
+                    addThreat(e, defender, THREAT_CONFIG.tauntThreat);
                   }
                 });
               } else if (data.type === 'assassin') {
@@ -4528,26 +4873,25 @@ healerEditor.config            - Aktuelle Werte zeigen
                   defender.position.z = weakest.position.z;
                   effects.push(...createExplosion(defender.position, 0x800080));
                 }
-              }
-            }
+              } else if (data.type === 'healer') {
+                defenders.forEach(other => {
+                  if (other === defender) return;
+                  const hdx = defender.position.x - other.position.x;
+                  const hdz = defender.position.z - other.position.z;
+                  if (Math.sqrt(hdx*hdx + hdz*hdz) < 6) {
+                    other.userData.health = Math.min(other.userData.maxHealth, other.userData.health + 20);
+                  }
+                });
 
-            if (data.type === 'healer' && data.abilityCooldown <= 0) {
-              defenders.forEach(other => {
-                if (other === defender) return;
-                const hdx = defender.position.x - other.position.x;
-                const hdz = defender.position.z - other.position.z;
-                if (Math.sqrt(hdx*hdx + hdz*hdz) < 6) {
-                  other.userData.health = Math.min(other.userData.maxHealth, other.userData.health + 20);
+                // Effekt-Position anpassen fグr GLB-Modell (hБher fグr Tank)
+                const effectPos = defender.position.clone();
+                if (data.isGLBModel) {
+                  effectPos.y += 2;
                 }
-              });
-
-              // Effekt-Position anpassen für GLB-Modell (höher für Tank)
-              const effectPos = defender.position.clone();
-              if (data.isGLBModel) {
-                effectPos.y += 2;
+                effects.push(...createHealEffect(effectPos));
               }
-              effects.push(...createHealEffect(effectPos));
             }
+
           } else {
             // No enemy in sight - patrol within the defense circle
             data.patrolWait -= dt;
@@ -4578,11 +4922,16 @@ healerEditor.config            - Aktuelle Werte zeigen
             // Move towards patrol target
             if (toTargetDist > 0.5) {
               const moveSpeed = data.speed * 0.8;
-              const dirX = toTargetX / toTargetDist;
-              const dirZ = toTargetZ / toTargetDist;
-              defender.position.x += dirX * moveSpeed;
-              defender.position.z += dirZ * moveSpeed;
-              defender.userData.targetRotation = Math.atan2(-dirZ, dirX);
+              moveUnitWithPathfinding(defender, data.patrolTarget, moveSpeed, {
+                allowGate: true,
+                stopDistance: 0.5,
+                setRotation: false,
+                allowFallback: false,
+              });
+              if (data.navNoPath) {
+                data.patrolWait = 0;
+              }
+              defender.userData.targetRotation = Math.atan2(-toTargetZ, toTargetX);
             }
           }
 
@@ -4629,6 +4978,7 @@ healerEditor.config            - Aktuelle Werte zeigen
               nearestEnemy.position,
               'tower'
             );
+            proj.userData.source = building;
             scene.add(proj);
             projectiles.push(proj);
             soundSystem.projectile();
@@ -4657,6 +5007,7 @@ healerEditor.config            - Aktuelle Werte zeigen
             const dy = proj.position.y - (enemy.userData.flying ? 1.8 : 0.5);
             if (Math.sqrt(dx*dx + dy*dy + dz*dz) < 1.5) {
               hit = true;
+              const source = proj.userData.source;
               if (proj.userData.splash) {
                 enemies.forEach(e => {
                   const ddx = proj.position.x - e.position.x;
@@ -4664,12 +5015,18 @@ healerEditor.config            - Aktuelle Werte zeigen
                   if (Math.sqrt(ddx*ddx + ddz*ddz) < proj.userData.splashRadius) {
                     e.userData.health -= proj.userData.damage;
                     effects.push(...createDamageNumber(e.position, Math.round(proj.userData.damage)));
+                    if (source) {
+                      addThreat(e, source, proj.userData.damage * THREAT_CONFIG.baseDamageThreat);
+                    }
                   }
                 });
                 effects.push(...createExplosion(proj.position));
               } else {
                 enemy.userData.health -= proj.userData.damage;
                 effects.push(...createDamageNumber(enemy.position, Math.round(proj.userData.damage)));
+                if (source) {
+                  addThreat(enemy, source, proj.userData.damage * THREAT_CONFIG.baseDamageThreat);
+                }
               }
             }
           });
@@ -4720,6 +5077,9 @@ healerEditor.config            - Aktuelle Werte zeigen
                   const damage = Math.floor(data.damage * damageFactor);
                   enemy.userData.health -= damage;
                   if (damage > 0) effects.push(...createDamageNumber(enemy.position, damage));
+                  if (damage > 0 && data.source) {
+                    addThreat(enemy, data.source, damage * THREAT_CONFIG.baseDamageThreat);
+                  }
                 }
               });
             }
